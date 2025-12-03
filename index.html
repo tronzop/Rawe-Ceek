@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Dodge The Circles</title>
+    <link rel="stylesheet" href="src/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Dodge the Circles</h1>
+      <p class="hint">Move with arrow keys or WASD. Avoid red circles — survive as long as you can.</p>
+      <!-- canvas will be sized to fill the browser window via CSS -->
+      <canvas id="game"></canvas>
+      <div id="hud">
+        <span id="score">Score: 0</span>
+        <span id="sfxStatus" aria-live="polite" style="margin-left:10px; font-size:13px; color:#9aa3c7"></span>
+        <span id="skinStatus" aria-live="polite" style="margin-left:10px; font-size:13px; color:#9aa3c7"></span>
+        <button id="restart">Restart</button>
+        <button id="pause">Pause</button>
+        <button id="musicToggle">Sound</button>
+        <button id="uploadSfx">Upload SFX</button>
+        <input id="gameoverFile" type="file" accept="audio/*" style="display:none" />
+      </div>
+      <footer>
+        <small>Built with plain HTML/CSS/JS — game fills the entire browser window (open index.html directly or run a local dev server).</small>
+      </footer>
+    </main>
+    <!-- Game over / leaderboard overlay (hidden) -->
+    <div id="gameOverPanel" class="hidden">
+      <div class="panel">
+        <h2>Game Over</h2>
+        <div class="result">Your score: <span id="finalScore">0</span></div>
+        <div class="nameRow">
+          <label for="playerName">Name</label>
+          <input id="playerName" maxlength="20" placeholder="Your name" />
+          <button id="submitScore">Submit</button>
+        </div>
+        <div class="leaderboardWrap">
+          <h3>Leaderboard</h3>
+          <ol id="leaderboardList"></ol>
+        </div>
+        <div class="panelActions">
+          <button id="closeLeaderboard">Close</button>
+          <button id="playAgain">Play again</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="src/game.js"></script>
+  </body>
+</html>

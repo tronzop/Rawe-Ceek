@@ -1,0 +1,14 @@
+name: prometheus_chick
+version: "3.8"
+services:
+  dodge-circles:
+    ports:
+      - 3732:8080
+      - 3003:3000
+    build:
+      context: .
+    environment:
+      - NODE_ENV=production
+    network_mode: bridge
+    volumes:
+      - ./server/leaderboard.json:/app/server/leaderboard.json

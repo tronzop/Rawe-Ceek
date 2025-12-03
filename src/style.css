@@ -1,0 +1,32 @@
+#sfxStatus{opacity:0.9}
+#skinStatus{opacity:0.9}
+* { box-sizing: border-box; }
+html,body{height:100%;}
+body{font-family: system-ui,Segoe UI,Roboto,Arial; margin:0; background: #0e0f14; color:#fff; height:100vh;}
+main{width:100vw; height:100vh; position:relative; display:block;}
+h1{margin:6px 0; font-size:22px}
+.hint{color:#bfc5d6; margin:6px 0 12px 0}
+#game{display:block; background:#0b1220; width:100%; height:100%; position:absolute; top:0; left:0; z-index:1}
+/* HUD and chrome overlay */
+#hud{display:flex; gap:8px; align-items:center; position:absolute; top:12px; left:12px; z-index:12}
+
+h1{position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:11; margin:0;}
+.hint{position:absolute; top:44px; left:50%; transform:translateX(-50%); z-index:11}
+footer{position:absolute; bottom:12px; left:50%; transform:translateX(-50%); z-index:11}
+
+/* Game over / leaderboard overlay */
+#gameOverPanel{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:40; pointer-events:none}
+#gameOverPanel .panel{pointer-events:auto; background:rgba(10,12,16,0.98); color:#fff; border-radius:10px; padding:18px; width:420px; box-shadow:0 10px 40px rgba(0,0,0,0.6);}
+#gameOverPanel.hidden{display:none}
+.nameRow{display:flex; gap:8px; align-items:center; margin-top:8px}
+.nameRow input{flex:1; padding:6px 8px; border-radius:6px; border:1px solid #324; background:#0d1a22; color:#fff}
+.nameRow button{padding:6px 10px}
+.leaderboardWrap{margin-top:10px}
+.leaderboardWrap ol{list-style:decimal; padding-left:18px; margin:0}
+.panelActions{display:flex; justify-content:space-between; gap:8px; margin-top:12px}
+#score{font-weight:700}
+button{padding:6px 10px; background:#1e293b; color:#fff; border:1px solid #2b3a4d; border-radius:4px}
+button.active{background:#0ea5a4; color:#062024}
+/* small upload button size tweak */
+#uploadSfx{padding:6px 8px; font-size:13px}
+footer{margin-top:10px; color:#9aa3c7}

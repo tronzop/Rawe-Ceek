@@ -1,0 +1,13 @@
+{
+  "name": "dodge-circles",
+  "version": "0.1.0",
+  "description": "A tiny HTML5 Canvas dodge-the-circles game (plain JS)",
+  "scripts": {
+    "start": "npx http-server ./ -p 8080 -c-1",
+    "preview": "npx serve . -l 8080",
+    "server": "node server/index.js",
+    "start:all": "concurrently \"npm run server\" \"npm start\""
+  },
+  "author": "",
+  "license": "MIT"
+}
