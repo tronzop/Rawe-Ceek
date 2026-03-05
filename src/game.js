@@ -82,10 +82,12 @@ function createAudio() {
   loadAudioBufferFromUrl('/assets/gameover.mp3').then(buf => {
     if (buf) {
       gameOverBuffer = buf;
-      console.info('Loaded /assets/gameover.mp3 into AudioBuffer (game-over SFX).');
-      if (sfxStatusEl) sfxStatusEl.textContent = 'SFX ready: gameover.mp3';
+      if (sfxStatusEl) sfxStatusEl.textContent = 'SFX ready';
     }
   }).catch(() => {});
+  loadAudioBufferFromUrl('/assets/scream.mp3').then(buf => { if (buf) screamBuffer = buf; }).catch(() => {});
+  loadAudioBufferFromUrl('/assets/sonotright.mp3').then(buf => { if (buf) soNotRightBuffer = buf; }).catch(() => {});
+  loadAudioBufferFromUrl('/assets/pushinglikeananimal.mp3').then(buf => { if (buf) pushingBuffer = buf; }).catch(() => {});
   return audioCtx;
 }
 
@@ -238,6 +240,11 @@ function processCarSprite(img) {
 let gameOverBuffer = null; // decoded AudioBuffer to play on game over
 let gameOverAudioElement = null; // fallback HTMLAudioElement if external asset exists
 let gameOverPlayed = false; // ensure we play sound only once per game over
+let screamBuffer = null;       // plays at moment of collision
+let soNotRightBuffer = null;   // plays on near miss
+let pushingBuffer = null;      // looping music track
+let pushingMusicSource = null; // current looping BufferSourceNode
+let nearMissCooldown = 0;      // seconds until next near-miss sound allowed
 
 function playKick(time = 0) {
   const ctx = createAudio();
@@ -414,6 +421,7 @@ function resetGame() {
   lastTime = performance.now();
   running = true;
   gameOverPlayed = false;
+  nearMissCooldown = 0;
   hideGameOverPanel();
 }
 
@@ -442,10 +450,12 @@ function toggleMusic() {
     musicToggle.classList.add('active');
     if (audioCtx.state === 'suspended') audioCtx.resume();
     startBeatLoop();
+    startMusicTrack();
   } else {
     isMusicOn = false;
     musicToggle.classList.remove('active');
     stopBeatLoop();
+    stopMusicTrack();
   }
 }
 
@@ -514,6 +524,42 @@ function playGameOverSfx() {
     const a = new Audio('/assets/gameover.mp3');
     a.play().catch(() => {});
   } catch (e) { /* ignore */ }
+}
+
+// Generic one-shot buffer player
+function playBuffer(buf, volume = 1) {
+  if (!buf || !audioCtx) return;
+  try {
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    const s = audioCtx.createBufferSource();
+    s.buffer = buf;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(volume, audioCtx.currentTime);
+    s.connect(g); g.connect(audioCtx.destination);
+    s.start();
+  } catch (e) { /* ignore */ }
+}
+
+// Looping background music track
+function startMusicTrack() {
+  stopMusicTrack();
+  if (!pushingBuffer || !audioCtx) return;
+  try {
+    pushingMusicSource = audioCtx.createBufferSource();
+    pushingMusicSource.buffer = pushingBuffer;
+    pushingMusicSource.loop = true;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.45, audioCtx.currentTime);
+    pushingMusicSource.connect(g); g.connect(audioCtx.destination);
+    pushingMusicSource.start();
+  } catch (e) { pushingMusicSource = null; }
+}
+
+function stopMusicTrack() {
+  if (pushingMusicSource) {
+    try { pushingMusicSource.stop(); } catch (e) {}
+    pushingMusicSource = null;
+  }
 }
 
 // --- Leaderboard UI and API
@@ -672,10 +718,13 @@ function update(dt) {
       running = false;
       // Stop the music/beat immediately when the game ends
       stopBeatLoop();
+      stopMusicTrack();
       isMusicOn = false;
       if (musicToggle) musicToggle.classList.remove('active');
       highScore = Math.max(highScore, Math.floor(elapsed));
       if (!gameOverPlayed) {
+        // scream at moment of impact, then game-over jingle
+        playBuffer(screamBuffer, 0.85);
         // Play the game-over SFX and then suspend audio context after it finishes (if we can detect duration)
         playGameOverSfx();
         gameOverPlayed = true;
@@ -692,6 +741,19 @@ function update(dt) {
         try { showGameOverPanel(elapsed); } catch (e) { /* ignore */ }
       }
       break;
+    }
+  }
+
+  // near-miss detection — enemy passes within 28px beyond collision threshold
+  nearMissCooldown = Math.max(0, nearMissCooldown - dt);
+  if (running && nearMissCooldown <= 0) {
+    for (const e of enemies) {
+      const dist = Math.hypot(e.x - player.x, e.y - player.y);
+      if (dist < e.r + player.r + 28) {
+        playBuffer(soNotRightBuffer, 0.5);
+        nearMissCooldown = 2.5;
+        break;
+      }
     }
   }
 
