@@ -4,6 +4,22 @@ const path = require('path');
 const DATA_FILE = path.join(__dirname, 'leaderboard.json');
 const PORT = process.env.PORT || 3000;
 
+// Simple in-memory rate limiter: max 5 POST submissions per IP per 60 seconds
+const _rateMap = new Map();
+const RATE_WINDOW = 60_000;
+const RATE_MAX = 5;
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const entry = _rateMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    _rateMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
+    return true;
+  }
+  if (entry.count >= RATE_MAX) return false;
+  entry.count++;
+  return true;
+}
+
 function readScores() {
   try {
     if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
@@ -36,6 +52,12 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.url === '/leaderboard' && req.method === 'POST') {
+    const clientIp = req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(clientIp)) {
+      res.writeHead(429);
+      res.end(JSON.stringify({ ok: false, error: 'too many requests' }));
+      return;
+    }
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {

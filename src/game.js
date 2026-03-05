@@ -45,6 +45,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowRight' || e.key === 'd') keys.right = true;
   if (e.key === 'p') togglePause();
   if (e.key === 'm') toggleMusic();
+  if ((e.key === 'r' || e.key === 'R') && !running) resetGame();
 });
 window.addEventListener('keyup', (e) => {
   if (e.key === 'ArrowUp' || e.key === 'w') keys.up = false;
@@ -53,6 +54,31 @@ window.addEventListener('keyup', (e) => {
   if (e.key === 'ArrowRight' || e.key === 'd') keys.right = false;
 });
 
+// Touch controls (virtual joystick — drag anywhere on the canvas)
+let _touchOrigin = null;
+const _TOUCH_DZ = 12; // dead-zone radius in px
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  _touchOrigin = { x: t.clientX, y: t.clientY };
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (!_touchOrigin) return;
+  const t = e.touches[0];
+  const dx = t.clientX - _touchOrigin.x;
+  const dy = t.clientY - _touchOrigin.y;
+  keys.left  = dx < -_TOUCH_DZ;
+  keys.right = dx >  _TOUCH_DZ;
+  keys.up    = dy < -_TOUCH_DZ;
+  keys.down  = dy >  _TOUCH_DZ;
+}, { passive: false });
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  _touchOrigin = null;
+  keys.left = keys.right = keys.up = keys.down = false;
+}, { passive: false });
+
 // Enemies (circles) list and spawn config
 let enemies = [];
 let spawnTimer = 0; // seconds
@@ -60,7 +86,16 @@ let spawnInterval = 1.6; // how frequently enemies spawn
 let elapsed = 0; // seconds survived
 let lastTime = performance.now();
 let running = true;
-let highScore = 0;
+let highScore = parseInt(localStorage.getItem('dtc_highScore') || '0', 10);
+
+// Power-ups and active effects
+const powerUps = [];
+let powerUpSpawnTimer = 15;
+let shieldActive = false, shieldTimer = 0;
+let slowmoActive = false, slowmoTimer = 0;
+
+// Floating score text particles
+const floatTexts = [];
 
 // Audio / tempo
 let audioCtx = null;
@@ -414,6 +449,11 @@ function resetGame() {
   lastTime = performance.now();
   running = true;
   gameOverPlayed = false;
+  powerUps.length = 0;
+  powerUpSpawnTimer = 15;
+  shieldActive = false; shieldTimer = 0;
+  slowmoActive = false; slowmoTimer = 0;
+  floatTexts.length = 0;
   hideGameOverPanel();
 }
 
@@ -521,6 +561,11 @@ const API_LEADERBOARD = (window.location.hostname === 'localhost' || window.loca
 const gameOverPanel = document.getElementById('gameOverPanel');
 const finalScoreEl = document.getElementById('finalScore');
 const playerNameInput = document.getElementById('playerName');
+// pre-fill saved player name
+if (playerNameInput) {
+  const _savedName = localStorage.getItem('dtc_playerName');
+  if (_savedName) playerNameInput.value = _savedName;
+}
 const submitScoreBtn = document.getElementById('submitScore');
 const leaderboardList = document.getElementById('leaderboardList');
 const closeLeaderboardBtn = document.getElementById('closeLeaderboard');
@@ -575,6 +620,7 @@ submitScoreBtn.addEventListener('click', async () => {
   submitScoreBtn.disabled = true;
   submitScoreBtn.textContent = 'Submitting...';
   const name = (playerNameInput.value || 'anon').toString().slice(0, 36);
+  localStorage.setItem('dtc_playerName', name);
   const score = Math.floor(elapsed);
   try {
     await submitScore(name, score);
@@ -632,17 +678,67 @@ function update(dt) {
     spawnTimer = Math.max(0.2, (spawnInterval - Math.min(1.1, elapsed / 45)) / tempoFactor);
   }
 
-  // update enemies
+  // update enemies (slow-mo halves their speed)
+  const enemySpeedMult = slowmoActive ? 0.25 : 1;
   for (const e of enemies) {
-    e.x += e.vx * dt;
-    e.y += e.vy * dt;
+    e.x += e.vx * dt * enemySpeedMult;
+    e.y += e.vy * dt * enemySpeedMult;
   }
 
   // increase difficulty slowly
   spawnInterval = Math.max(0.6, 1.6 - elapsed / 60);
 
+  // update active effect timers
+  if (shieldActive) { shieldTimer -= dt; if (shieldTimer <= 0) shieldActive = false; }
+  if (slowmoActive) { slowmoTimer -= dt; if (slowmoTimer <= 0) slowmoActive = false; }
+
+  // spawn power-ups periodically
+  if (running) {
+    powerUpSpawnTimer -= dt;
+    if (powerUpSpawnTimer <= 0) {
+      spawnPowerUp();
+      powerUpSpawnTimer = 15 + Math.random() * 8;
+    }
+  }
+
+  // age and expire power-ups; collect on player overlap
+  for (let pi = powerUps.length - 1; pi >= 0; pi--) {
+    const pu = powerUps[pi];
+    pu.age += dt;
+    if (pu.age > 8) { powerUps.splice(pi, 1); continue; }
+    const dist = Math.hypot(pu.x - player.x, pu.y - player.y);
+    if (dist < pu.r + player.r + 8) {
+      powerUps.splice(pi, 1);
+      if (pu.type === 'shield') {
+        shieldActive = true; shieldTimer = 4;
+        addFloatText('SHIELD ON!', player.x, player.y - 24, '#4fc3f7');
+      } else {
+        slowmoActive = true; slowmoTimer = 5;
+        addFloatText('SLOW-MO!', player.x, player.y - 24, '#ce93d8');
+      }
+    }
+  }
+
+  // near-miss detection — bonus score when an enemy passes within 22px without hitting
+  if (running) {
+    for (const e of enemies) {
+      const gap = Math.hypot(e.x - player.x, e.y - player.y) - e.r - player.r;
+      if (gap >= 0 && gap < 22) {
+        e._wasNear = true;
+      } else if (e._wasNear && gap >= 22 && !e._nearMissAwarded) {
+        e._nearMissAwarded = true;
+        elapsed += 1.5;
+        addFloatText('+1.5 NEAR MISS!', player.x, player.y - 28, '#ffeb3b');
+      }
+    }
+  }
+
+  // update floating score texts
+  updateFloatTexts(dt);
+
   // collision detection — circle overlap OR polygon-based hitbox if a processed sprite exists
-  for (const e of enemies) {
+  for (let _ei = 0; _ei < enemies.length; _ei++) {
+    const e = enemies[_ei];
     let hit = false;
 
     if (carHitPolygon && carSpriteCanvas) {
@@ -669,12 +765,20 @@ function update(dt) {
     }
 
     if (hit) {
+      // shield absorbs one hit
+      if (shieldActive) {
+        shieldActive = false; shieldTimer = 0;
+        enemies.splice(_ei, 1);
+        addFloatText('SHIELD!', player.x, player.y - 20, '#4fc3f7');
+        break;
+      }
       running = false;
       // Stop the music/beat immediately when the game ends
       stopBeatLoop();
       isMusicOn = false;
       if (musicToggle) musicToggle.classList.remove('active');
       highScore = Math.max(highScore, Math.floor(elapsed));
+      localStorage.setItem('dtc_highScore', highScore);
       if (!gameOverPlayed) {
         // Play the game-over SFX and then suspend audio context after it finishes (if we can detect duration)
         playGameOverSfx();
@@ -717,27 +821,70 @@ function draw() {
 
   ctx.clearRect(0, 0, vw, vh);
 
-  // background grid subtle
+  // F1 track background
   ctx.fillStyle = '#071827';
   ctx.fillRect(0, 0, vw, vh);
+  drawTrackBackground(ctx, vw, vh);
 
-    // draw smoke particles first (so car sits on top)
-    drawParticles(ctx);
+  // draw smoke particles first (so car sits on top)
+  drawParticles(ctx);
 
-    // draw player
-    drawCar(ctx, player.x, player.y, player.angle, player);
+  // draw player
+  drawCar(ctx, player.x, player.y, player.angle, player);
+
+  // shield pulse visual around player
+  if (shieldActive) {
+    const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 110);
+    ctx.save();
+    ctx.strokeStyle = `rgba(79,195,247,${pulse})`;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = '#4fc3f7';
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r + 16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // draw power-ups
+  for (const pu of powerUps) drawPowerUp(ctx, pu);
 
   // draw enemies (render as Pirelli tyre compounds, with colored sidewall / stripe)
   for (const e of enemies) {
     drawTyre(ctx, e.x, e.y, e.r, e.compound);
   }
 
-  // crosshair for player
+  // edge warning indicators for off-screen enemies
+  drawEdgeIndicators(ctx, vw, vh);
+
+  // floating score texts
+  drawFloatTexts(ctx);
+
   // subtle circular guide around car (collision zone)
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   ctx.beginPath();
   ctx.arc(player.x, player.y, player.r + 12, 0, Math.PI * 2);
   ctx.stroke();
+
+  // active effect HUD (drawn on canvas so it works without HTML changes)
+  let effectY = 70;
+  if (shieldActive) {
+    ctx.save();
+    ctx.fillStyle = '#4fc3f7';
+    ctx.font = 'bold 13px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText(`SHIELD  ${Math.ceil(shieldTimer)}s`, 12, effectY);
+    effectY += 18;
+    ctx.restore();
+  }
+  if (slowmoActive) {
+    ctx.save();
+    ctx.fillStyle = '#ce93d8';
+    ctx.font = 'bold 13px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillText(`SLOW-MO  ${Math.ceil(slowmoTimer)}s`, 12, effectY);
+    ctx.restore();
+  }
 }
 
 // small helper - draw a simplified, stylized Formula 1 car
@@ -941,6 +1088,167 @@ function drawTyre(ctx, x, y, r, compound) {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('P', 0, 0);
   ctx.restore();
+}
+
+// ─── Helper: F1 track background ────────────────────────────────────────────
+function drawTrackBackground(ctx, vw, vh) {
+  // subtle asphalt grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.025)';
+  ctx.lineWidth = 1;
+  const gs = 80;
+  ctx.beginPath();
+  for (let x = gs; x < vw; x += gs) { ctx.moveTo(x, 0); ctx.lineTo(x, vh); }
+  for (let y = gs; y < vh; y += gs) { ctx.moveTo(0, y); ctx.lineTo(vw, y); }
+  ctx.stroke();
+
+  // dashed center-line cross (track markings)
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([28, 22]);
+  ctx.beginPath(); ctx.moveTo(vw / 2, 0); ctx.lineTo(vw / 2, vh); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, vh / 2); ctx.lineTo(vw, vh / 2); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // corner curb stripes (alternating red / white, F1 kerb style)
+  const n = 4, sw = 8; // 4 stripes, each 8 px wide
+  const corners = [
+    [0,         0        ],
+    [vw - n*sw, 0        ],
+    [0,         vh - n*sw],
+    [vw - n*sw, vh - n*sw],
+  ];
+  for (const [ox, oy] of corners) {
+    for (let i = 0; i < n; i++) {
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(220,40,40,0.30)' : 'rgba(255,255,255,0.14)';
+      ctx.fillRect(ox + i * sw, oy, sw, n * sw);
+    }
+  }
+}
+
+// ─── Helper: spawn a power-up ────────────────────────────────────────────────
+function spawnPowerUp() {
+  const vw = canvas.width / (window.devicePixelRatio || 1);
+  const vh = canvas.height / (window.devicePixelRatio || 1);
+  const types = ['shield', 'slowmo'];
+  const type = types[Math.floor(Math.random() * types.length)];
+  powerUps.push({ x: rand(80, vw - 80), y: rand(80, vh - 80), r: 14, type, age: 0 });
+}
+
+// ─── Helper: draw a power-up ─────────────────────────────────────────────────
+function drawPowerUp(ctx, pu) {
+  const pulse = 0.85 + 0.15 * Math.sin(performance.now() / 280);
+  const fadeAlpha = Math.min(1, (8 - pu.age) / 1.5) * pulse;
+  const isShield = pu.type === 'shield';
+  const color = isShield ? '#4fc3f7' : '#ce93d8';
+  const r = pu.r;
+
+  ctx.save();
+  ctx.translate(pu.x, pu.y);
+  ctx.globalAlpha = fadeAlpha;
+
+  // glow ring
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 10;
+  ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // filled backing circle
+  ctx.beginPath();
+  ctx.fillStyle = isShield ? 'rgba(79,195,247,0.20)' : 'rgba(206,147,216,0.20)';
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // icon drawn programmatically
+  ctx.fillStyle = color;
+  if (isShield) {
+    // shield silhouette
+    const s = r * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(s * 0.8, -s * 0.4);
+    ctx.lineTo(s * 0.8, s * 0.15);
+    ctx.quadraticCurveTo(s * 0.8, s, 0, s);
+    ctx.quadraticCurveTo(-s * 0.8, s, -s * 0.8, s * 0.15);
+    ctx.lineTo(-s * 0.8, -s * 0.4);
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    // clock face for slow-mo
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.52, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(206,147,216,0.3)';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // hands
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(0, -r * 0.32);
+    ctx.moveTo(0, 0); ctx.lineTo(r * 0.22, r * 0.18);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ─── Helper: edge warning arrows for off-screen enemies ───────────────────────
+function drawEdgeIndicators(ctx, vw, vh) {
+  const margin = 20;
+  for (const e of enemies) {
+    const offL = e.x < 0, offR = e.x > vw, offT = e.y < 0, offB = e.y > vh;
+    if (!offL && !offR && !offT && !offB) continue;
+
+    // indicator position: clamp enemy coords to screen edge
+    const ix = Math.max(margin, Math.min(vw - margin, e.x));
+    const iy = Math.max(margin, Math.min(vh - margin, e.y));
+    // arrow angle: point from clamped position toward enemy
+    const ang = Math.atan2(e.y - iy, e.x - ix);
+    const color = e.compound ? e.compound.color : '#ff5c5c';
+
+    ctx.save();
+    ctx.translate(ix, iy);
+    ctx.rotate(ang);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(-7, -5);
+    ctx.lineTo(-4, 0);
+    ctx.lineTo(-7, 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ─── Floating score texts ─────────────────────────────────────────────────────
+function addFloatText(text, x, y, color) {
+  floatTexts.push({ text, x, y, color: color || '#ffffff', age: 0, life: 1.4 });
+}
+function updateFloatTexts(dt) {
+  for (let i = floatTexts.length - 1; i >= 0; i--) {
+    floatTexts[i].age += dt;
+    if (floatTexts[i].age >= floatTexts[i].life) floatTexts.splice(i, 1);
+  }
+}
+function drawFloatTexts(ctx) {
+  for (const ft of floatTexts) {
+    const alpha = 1 - ft.age / ft.life;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = 'bold 14px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = ft.color;
+    ctx.shadowColor = ft.color;
+    ctx.shadowBlur = 6;
+    ctx.fillText(ft.text, ft.x, ft.y - ft.age * 38);
+    ctx.restore();
+  }
 }
 
 function frame() {
