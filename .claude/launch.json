@@ -2,15 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "game",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["http-server", "./", "-p", "8080", "-c-1"],
+      "name": "Frontend (http-server)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
       "port": 8080
     },
     {
-      "name": "leaderboard-api",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["server/index.js"],
+      "name": "Leaderboard API",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "server"],
       "port": 3000
     }
   ]
