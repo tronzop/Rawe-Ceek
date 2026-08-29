@@ -66,13 +66,11 @@ export const PIT = {
   firstWindowAt: 24,
   interval: 26,
   openFor: 7,
-  // How long the car is stationary in the box.
-  stopTime: { min: 1.9, max: 2.6 },
-  // Ferrari strategy: chance the stop goes wrong and takes extra time.
-  slowStopChance: 0.18,
-  slowStopExtra: { min: 2.5, max: 5.0 },
+  // How long the car is stationary is decided by the wheel-gun mini-game (see PITGAME).
   // Total time spent in the lane (entry, stop, exit) is padded by this.
   laneTravel: 2.2,
+  // Seconds after a stop before the window will accept you again.
+  cooldown: 10,
 };
 
 export const WEATHER = {
@@ -196,3 +194,18 @@ export const SCORING_EXTRA = {
 export const SAFETY_CAR_TEAM = { name: 'Safety Car', primary: '#c9ccd2', accent: '#ff9d00' };
 
 Object.assign(STORAGE_KEYS, { career: 'rawe-ceek:career' });
+
+/** Pit-stop mini-game: fire the wheel gun when the sweeping marker is in the zone. */
+export const PITGAME = {
+  wheels: ['FL', 'FR', 'RL', 'RR'],
+  window: 1.1, // seconds you have per wheel before the mechanic gives up and does it slowly
+  sweepSpeed: 1.6, // full left→right→left sweeps per second
+  zoneHalf: 0.13, // half-width of the green zone (0..1 bar)
+  perfectHalf: 0.045,
+  jamChance: 0.15, // Ferrari: some wheels have a much narrower zone
+  jamZoneHalf: 0.06,
+  time: { base: 0.55, perfect: 0.28, good: 0.42, miss: 1.35 }, // seconds each wheel takes by result
+  recordUnder: 2.0, // total stop time for a RECORD STOP
+  recordBonus: 100,
+  cleanBonus: 50, // no misses
+};

@@ -20,11 +20,14 @@ export class Input {
       const k = keyMap[e.code];
       if (k) { this.state[k] = true; e.preventDefault(); }
       if (e.repeat) return;
+      // one-shot "fire" for the pit-stop mini-game (boost keys double up as the wheel gun)
+      if (k === 'boost' || e.code === 'KeyB') this.emit('action');
       switch (e.code) {
         case 'KeyP': case 'Escape': this.emit('pause'); break;
         case 'Enter': this.emit('confirm'); break;
         case 'KeyR': this.emit('restart'); break;
         case 'KeyM': this.emit('music'); break;
+        case 'KeyB': this.emit('pit'); break;
         case 'KeyN': this.emit('sfx'); break;
         case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5':
           this.emit('compound', Number(e.code.slice(-1)) - 1); break;

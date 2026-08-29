@@ -150,3 +150,32 @@ export function tempGrip(temp) {
 export function positionLabel(overtakes) {
   return `P${Math.max(1, 20 - overtakes)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Pit-stop mini-game maths
+// ---------------------------------------------------------------------------
+import { PITGAME } from './config.js';
+
+/** Marker position 0..1 for a wheel that has been live for `t` seconds (ping-pong sweep). */
+export function sweepPos(t) {
+  const x = (t * PITGAME.sweepSpeed) % 2;
+  return x <= 1 ? x : 2 - x;
+}
+/** Judges a wheel-gun press at marker position `pos` (0..1). */
+export function judgeWheel(pos, jammed = false) {
+  const d = Math.abs(pos - 0.5);
+  if (d <= PITGAME.perfectHalf) return 'perfect';
+  if (d <= (jammed ? PITGAME.jamZoneHalf : PITGAME.zoneHalf)) return 'good';
+  return 'miss';
+}
+/** Total stationary time for a list of wheel results ('perfect' | 'good' | 'miss'). */
+export function stopTime(results) {
+  return PITGAME.time.base + results.reduce((s, r) => s + PITGAME.time[r], 0);
+}
+/** Summary of a finished stop. */
+export function stopSummary(results) {
+  const time = stopTime(results);
+  const misses = results.filter((r) => r === 'miss').length;
+  const perfects = results.filter((r) => r === 'perfect').length;
+  return { time, misses, perfects, clean: misses === 0, record: misses === 0 && time < PITGAME.recordUnder };
+}

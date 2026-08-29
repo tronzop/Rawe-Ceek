@@ -10,6 +10,7 @@
   </head>
   <body>
     <canvas id="game" aria-label="Rawe Ceek race"></canvas>
+    <button id="boxBtn" class="box" hidden aria-label="Box this lap"><b>BOX</b><span></span></button>
 
     <!-- Title -->
     <section id="titleScreen" class="screen">
@@ -25,7 +26,7 @@
           <div><kbd>▶</kbd> push <kbd>◀</kbd> lift</div>
           <div><kbd>Space</kbd> ERS boost</div>
           <div><kbd>1</kbd>–<kbd>5</kbd> next tyre</div>
-          <div><kbd>▲</kbd> into the green gap to pit</div>
+          <div><kbd>B</kbd> box (or tap the BOX button)</div>
           <div><kbd>P</kbd> pause <kbd>M</kbd> music</div>
         </div>
         <div class="row">
@@ -38,7 +39,8 @@
             <li>Hit a tyre or another car and it's over. Oil spins you, debris damages the front wing.</li>
             <li>Tyres wear faster the harder you push. Past ~65% wear grip falls off a cliff; at 100% you puncture. Fresh tyres are cold for a few seconds.</li>
             <li>Softs are quick and short-lived, hards are slow and last. Inters and wets only work in the rain — and at Spa, it rains.</li>
-            <li>A pit window opens every ~26 s. Steer up into the green gap to box; pick the compound with 1–5 first. Sometimes the wheel gun jams. This is Ferrari.</li>
+            <li>A pit window opens every ~26 s. Press <b>B</b> or tap the <b>BOX BOX</b> button (or steer up into the green gap) to box; pick the compound with 1–5 first.</li>
+            <li><b>In the box you are the pit crew</b>: four wheels, one at a time. Fire the gun (<b>Space</b>, <b>B</b> or tap) when the sweeping marker is in the green — the cyan centre is a perfect. Miss and the nut cross-threads (+1.3 s). Some wheels are <b>jammed</b> with a tiny zone. Under 2.0 s is a record stop (+100); a clean stop is +50.</li>
             <li>Sit directly behind a rival for the <b>tow</b>: extra speed and the battery charges. Some rivals defend.</li>
             <li><b>Safety car</b>: slow down and do not overtake, or it's a 5 s penalty. The restart pays double for overtakes.</li>
             <li>Every 1.5 km is a Grand Prix: +150 and 25 championship points, then the calendar moves on. Eight venues, two of them at night.</li>

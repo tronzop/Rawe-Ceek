@@ -21,7 +21,7 @@ Or open `index.html` straight from disk — everything works offline except the 
 | `◀` / `A` | Lift and coast (slower, saves tyres) |
 | `Space` / `Shift` | ERS boost (drains the battery; DRS gates refill it) |
 | `1`–`5` / `Tab` | Choose the compound for your next stop (Soft / Medium / Hard / Inter / Wet) |
-| `▲` into the green gap | Enter the pit lane when the window is open |
+| `B` / **BOX BOX** button | Box this lap — the car steers itself into the pits when the window is open (steering `▲` into the green gap still works) |
 | `P` / `Esc` | Pause · `R` restart · `M` music · `N` sound effects |
 | Touch / mouse | Drag to steer; press on the right quarter of the screen to boost |
 
@@ -30,7 +30,8 @@ Or open `index.html` straight from disk — everything works offline except the 
 - **Crash** into a tyre or a rival car and the race is over. **Oil** spins you and adds wear; **debris** damages the front wing (a little less top speed until you pit).
 - **Tyre wear** grows with the square of your speed. Past ~65 % grip falls off a cliff — you turn slower and can't use full throttle. At 100 % you puncture and limp until you pit.
 - **Compounds**: softs are quick and short-lived, hards are slow and last, mediums are mediums. Inters and wets only grip when it **rains**, and it will rain.
-- **Pit window** opens every ~26 s for 7 s. Steer up into the flashing green gap in the pit wall. The stop fits whatever compound you selected. Sometimes the wheel gun jams. This is Ferrari.
+- **Pit window** opens every ~26 s for 7 s. Press `B` or tap the pulsing **BOX BOX** button and the car steers itself into the pits (or steer up into the flashing green gap yourself). Ask too early and the wall tells you to stay out. The stop fits whatever compound you selected.
+- **The stop is a mini-game**: you are the pit crew. Four wheels go one at a time; a marker sweeps across a bar and you fire the wheel gun (`Space`, `B` or tap) when it's in the green zone — the cyan centre is a *perfect*. A miss cross-threads the nut and costs 1.3 s; wait too long and the mechanic does it for you, slowly. Some wheels are **jammed** (tiny zone). All four perfect ≈ 1.67 s. Under 2.0 s is a **record stop** (+100), no misses is a clean stop (+50). This is Ferrari, so it will go wrong sometimes anyway.
 - **Slipstream**: sit directly behind a rival and you get the tow — up to +12 % speed and the battery charges. Some rivals defend by moving across to cover your lane (watch their brake lights).
 - **Safety car**: a car is stranded somewhere ahead, the field bunches up, marshals wave yellows and a speed delta applies. Overtaking under the SC is a **5 s penalty** (you crawl and score nothing while you serve it). Restart clean and you bank +50; overtakes pay double for the next 4 s.
 - **Grand Prix calendar**: every 1.5 km is a race. Cross the line for +150 and 25 championship points, then the scenery morphs into the next venue: Monza, Monaco, Silverstone, Spa, Suzuka, Singapore (night), Interlagos, Bahrain (night). Each venue has its own skyline, palette and rain probability — Spa is soaked, Bahrain never rains.

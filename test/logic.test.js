@@ -223,3 +223,24 @@ test('server: /api/assets lists only media files and tolerates missing dirs', as
   for (const f of a.clips) assert.match(f, /\.(mp3|ogg|wav|m4a)$/);
   for (const f of a.drivers) assert.match(f, /\.(png|jpe?g|webp|gif)$/);
 });
+
+test('pit mini-game: sweep, judgement and stop times', () => {
+  const { sweepPos, judgeWheel, stopTime, stopSummary } = logic;
+  const { PITGAME } = config;
+  assert.equal(sweepPos(0), 0);
+  assert.ok(Math.abs(sweepPos(0.5 / PITGAME.sweepSpeed) - 0.5) < 1e-9, 'centre at half a sweep');
+  assert.ok(Math.abs(sweepPos(1 / PITGAME.sweepSpeed) - 1) < 1e-9, 'far end after one sweep');
+  assert.ok(Math.abs(sweepPos(2 / PITGAME.sweepSpeed)) < 1e-9, 'back to start after two');
+  assert.equal(judgeWheel(0.5), 'perfect');
+  assert.equal(judgeWheel(0.5 + PITGAME.perfectHalf + 0.01), 'good');
+  assert.equal(judgeWheel(0.5 + PITGAME.zoneHalf + 0.01), 'miss');
+  assert.equal(judgeWheel(0.5 + PITGAME.jamZoneHalf + 0.01, true), 'miss');
+  assert.equal(judgeWheel(0.5 + PITGAME.jamZoneHalf + 0.01, false), 'good');
+  const perfect = Array(4).fill('perfect');
+  assert.ok(stopTime(perfect) < PITGAME.recordUnder, 'four perfects is a record');
+  assert.ok(stopTime(Array(4).fill('good')) > PITGAME.recordUnder, 'four goods is not');
+  assert.ok(stopTime(['good', 'good', 'good', 'miss']) > stopTime(Array(4).fill('good')) + 0.8);
+  const s = stopSummary(['perfect', 'good', 'miss', 'good']);
+  assert.deepEqual([s.misses, s.perfects, s.clean, s.record], [1, 1, false, false]);
+  assert.ok(stopSummary(perfect).record);
+});

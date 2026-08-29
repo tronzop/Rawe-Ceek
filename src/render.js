@@ -1,7 +1,7 @@
 // Canvas renderer. Reads the World and draws the whole scene + HUD.
 // The world is in logical units (height = WORLD.height); `view.scale` maps to device px.
-import { COMPOUNDS, ERS, PLAYER, SAFETY_CAR_TEAM, SPEED } from './config.js';
-import { clamp, formatDistance, formatTime, gpProgress, lerp, positionLabel } from './logic.js';
+import { COMPOUNDS, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SPEED } from './config.js';
+import { clamp, formatDistance, formatTime, gpProgress, lerp, positionLabel, sweepPos } from './logic.js';
 
 const FONT = '"Segoe UI", system-ui, Roboto, sans-serif';
 const MONO = '"Cascadia Mono", Consolas, "Roboto Mono", monospace';
@@ -76,6 +76,8 @@ export class Renderer {
     for (const hz of world.hazards) if (hz.type !== 'oil' && hz.type !== 'drs') this.drawHazard(hz, world);
     if (world.sc.car) this.drawSafetyCar(world);
     this.drawPlayer(world);
+    // stationary car: mechanics at each wheel + the wheel-gun mini-game (drawn late so nothing paints over it)
+    if (world.pit.inLane && world.pit.phase === 'stop' && world.pit.game) this.drawPitGame(world);
     this.drawParticles(world, ['flame', 'spark', 'carbon']);
     this.drawMarshals(world, W);
     this.drawNight(world, W, H);
@@ -354,23 +356,6 @@ export class Renderer {
     for (let x = -(world.scroll % 130); x < W; x += 130) {
       ctx.strokeRect(x, top + 26, 110, bottom - top - 32);
     }
-    // stationary car indicator when stopped: mechanics
-    if (world.pit.inLane && world.pit.phase === 'stop') {
-      const p = world.player;
-      // mechanics crouched at each wheel
-      for (const [dx, dy] of [[-58, -26], [-58, 26], [54, -26], [54, 26]]) {
-        ctx.fillStyle = '#e10600';
-        ctx.beginPath(); ctx.arc(p.x + dx, p.y + dy, 9, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = '#ffd400';
-        ctx.beginPath(); ctx.arc(p.x + dx, p.y + dy - 3, 4, 0, Math.PI * 2); ctx.fill();
-      }
-      if (world.pit.slow) {
-        ctx.fillStyle = '#fff';
-        ctx.font = `bold 14px ${FONT}`;
-        ctx.textAlign = 'center';
-        ctx.fillText('WHEEL GUN PROBLEM', p.x, p.y - 40 + Math.sin(this.time * 20) * 2);
-      }
-    }
     // pit wall between lane and track, with the entry gap when open
     const wallTop = bottom;
     const wallH = world.trackTop - bottom;
@@ -513,6 +498,99 @@ export class Renderer {
       }
     }
     ctx.textBaseline = 'alphabetic';
+  }
+
+  /** The pit-stop mini-game: mechanics, per-wheel status, sweeping marker, stop clock. */
+  drawPitGame(world) {
+    const { ctx } = this;
+    const p = world.player;
+    const g = world.pit.game;
+    const n = PITGAME.wheels.length;
+    const done = g.wheel >= n;
+    // mechanics crouched at each wheel; the active one raises the gun
+    const spots = [[54, -26], [54, 26], [-58, -26], [-58, 26]]; // FL FR RL RR (car faces right)
+    spots.forEach(([dx, dy], i) => {
+      const active = i === g.wheel && !done;
+      const res = g.results[i];
+      ctx.fillStyle = '#e10600';
+      ctx.beginPath(); ctx.arc(p.x + dx, p.y + dy, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffd400';
+      ctx.beginPath(); ctx.arc(p.x + dx, p.y + dy - 3, 4, 0, Math.PI * 2); ctx.fill();
+      // gun
+      ctx.fillStyle = active ? '#fff' : '#555a66';
+      ctx.fillRect(p.x + dx + (dx > 0 ? -16 : 8), p.y + dy - 2, 8, 4);
+      // status dot
+      if (res) {
+        ctx.fillStyle = res === 'perfect' ? '#7df9ff' : res === 'good' ? '#2ecc71' : '#ff3b3b';
+        ctx.beginPath(); ctx.arc(p.x + dx, p.y + dy + 14, 4, 0, Math.PI * 2); ctx.fill();
+      }
+    });
+    // gun flash on the wheel just done
+    if (g.flash > 0 && g.lastResult) {
+      const i = g.wheel - 1;
+      const [dx, dy] = spots[i] || [0, 0];
+      ctx.fillStyle = g.lastResult === 'miss' ? `rgba(255,59,59,${g.flash})` : `rgba(255,255,220,${g.flash})`;
+      ctx.beginPath(); ctx.arc(p.x + dx, p.y + dy, 10 + (1 - g.flash) * 14, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // panel above the car
+    const W = 340, H = 96;
+    const x = p.x - W / 2;
+    const y = p.y + 46; // below the car, over the empty top of the track
+    ctx.fillStyle = 'rgba(8,10,16,0.88)';
+    roundRect(ctx, x, y, W, H, 10);
+    ctx.fill();
+    // stop clock
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold 28px ${MONO}`;
+    ctx.fillText(g.total.toFixed(2), x + 14, y + 34);
+    ctx.font = `11px ${FONT}`;
+    ctx.fillStyle = '#c9ced9';
+    ctx.fillText('stop time', x + 14, y + 48);
+    // wheel chips
+    PITGAME.wheels.forEach((w, i) => {
+      const cx = x + 132 + i * 50;
+      const res = g.results[i];
+      const active = i === g.wheel && !done;
+      ctx.fillStyle = res === 'perfect' ? '#7df9ff' : res === 'good' ? '#2ecc71' : res === 'miss' ? '#ff3b3b' : active ? '#ffd400' : 'rgba(255,255,255,0.14)';
+      roundRect(ctx, cx, y + 12, 38, 22, 5);
+      ctx.fill();
+      ctx.fillStyle = res || active ? '#111' : '#c9ced9';
+      ctx.font = `bold 12px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(res === 'miss' ? '✕' : res === 'perfect' ? '★' : w, cx + 19, y + 28);
+      if (g.jammed[i] && !res) { ctx.fillStyle = '#ff8a00'; ctx.font = `bold 9px ${FONT}`; ctx.fillText('JAM', cx + 19, y + 44); }
+    });
+    // sweep bar
+    const bx = x + 14, by = y + 60, bw = W - 28, bh = 16;
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    roundRect(ctx, bx, by, bw, bh, 4); ctx.fill();
+    if (!done) {
+      const half = g.jammed[g.wheel] ? PITGAME.jamZoneHalf : PITGAME.zoneHalf;
+      ctx.fillStyle = 'rgba(46,204,113,0.55)';
+      ctx.fillRect(bx + bw * (0.5 - half), by, bw * half * 2, bh);
+      ctx.fillStyle = 'rgba(125,249,255,0.9)';
+      ctx.fillRect(bx + bw * (0.5 - PITGAME.perfectHalf), by, bw * PITGAME.perfectHalf * 2, bh);
+      if (g.hold <= 0) {
+        const pos = sweepPos(g.t);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(bx + bw * pos - 2, by - 4, 4, bh + 8);
+        // time left on this wheel
+        ctx.fillStyle = 'rgba(255,212,0,0.8)';
+        ctx.fillRect(bx, by + bh + 3, bw * (1 - g.t / PITGAME.window), 3);
+      }
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.textAlign = 'right';
+      ctx.fillText(g.hold > 0 ? (g.lastResult === 'miss' ? 'CROSS-THREADED…' : g.lastResult === 'perfect' ? 'PERFECT' : 'GOOD') : `FIRE  ·  SPACE / B / tap`, x + W - 14, y + 48);
+    } else {
+      ctx.fillStyle = '#2ecc71';
+      ctx.font = `bold 12px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(g.hold > 0 ? 'JACK DOWN — GO GO GO' : '', x + W / 2, by + 12);
+    }
+    ctx.textAlign = 'left';
   }
 
   /** Yellow-flag marshals along the pit wall while the safety car is out. */
@@ -1036,10 +1114,13 @@ export class Renderer {
     ctx.font = `bold 12px ${FONT}`;
     if (world.pit.inLane) {
       ctx.fillStyle = '#ffd400';
-      ctx.fillText(world.pit.phase === 'stop' ? `IN THE BOX ${world.pit.timer.toFixed(1)}s` : 'PIT LANE', tx + tw - 12, H - 104);
+      ctx.fillText(world.pit.phase === 'stop' ? 'IN THE BOX — fire the guns!' : 'PIT LANE', tx + tw - 12, H - 104);
     } else if (world.pit.open) {
       ctx.fillStyle = '#2ecc71';
-      ctx.fillText('PIT OPEN — hold ▲', tx + tw - 12, H - 104);
+      ctx.fillText(world.pit.requested ? 'BOXING — copy' : 'PIT OPEN — press B', tx + tw - 12, H - 104);
+    } else if (world.pit.cooldown > 0) {
+      ctx.fillStyle = '#8a91a0';
+      ctx.fillText('fresh tyres — stay out', tx + tw - 12, H - 104);
     } else {
       ctx.fillStyle = '#8a91a0';
       ctx.fillText(`pit window in ${Math.ceil(pitIn)}s`, tx + tw - 12, H - 104);
@@ -1150,7 +1231,7 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.font = `13px ${FONT}`;
       ctx.fillStyle = '#fff';
-      ctx.fillText('▲▼ steer   ▶ push / ◀ lift   SPACE boost   ▲ into the green gap to pit   ·   sit behind a rival for the tow', W / 2, world.trackBottom - 22);
+      ctx.fillText('▲▼ steer   ▶ push / ◀ lift   SPACE boost   B to box when the window opens   ·   sit behind a rival for the tow', W / 2, world.trackBottom - 22);
       ctx.globalAlpha = 1;
     }
   }

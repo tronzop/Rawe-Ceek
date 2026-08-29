@@ -153,11 +153,26 @@ function onWorldEvent(evt, payload = {}) {
     case 'puncture': toast('PUNCTURE', '#ff3b3b'); radio('puncture'); audio.playAny(['bono', 'sonotright'], { volume: 0.9, minGap: 3 }); break;
     case 'pitOpen': radio('pitOpen'); audio.play('boxbox', { volume: 0.8, minGap: 20 }); break;
     case 'pitIn': radio('pitIn'); break;
-    case 'pitStop':
-      audio.wheelGun(payload.slow ? 9 : 4);
-      if (payload.slow) { radio('pitSlow'); toast('SO NOT RIGHT', '#ff3b3b'); audio.playAny(['wearechecking', 'sonotright'], { volume: 0.9 }); }
+    case 'pitRequested': audio.blip(880, 0.08, 'square', 0.15); radio('pitRequested'); break;
+    case 'pitDenied': audio.blip(220, 0.12, 'sawtooth', 0.15); radio('pitDenied'); break;
+    case 'pitStop': radio('pitGame'); break;
+    case 'pitWheel':
+      if (payload.result === 'miss') {
+        audio.wheelGun(3); audio.skid(0.2);
+        audio.playAny(['wearechecking', 'sonotright'], { volume: 0.9, minGap: 2 });
+        radio(payload.timedOut ? 'pitLate' : 'pitMiss');
+      } else {
+        audio.wheelGun(1);
+        if (payload.result === 'perfect') audio.blip(1320, 0.07, 'square', 0.18);
+      }
       break;
-    case 'pitOut': radio('pitOut'); toast(`${COMPOUNDS[payload.compound].label} FITTED`, COMPOUNDS[payload.compound].color); break;
+    case 'pitOut': {
+      const c = COMPOUNDS[payload.compound];
+      if (payload.record) { audio.fanfare(); toast(`${payload.time.toFixed(2)}s RECORD STOP`, '#7df9ff', `${c.label} fitted`); radio('pitRecord'); }
+      else if (payload.clean) { audio.drs(); toast(`${payload.time.toFixed(2)}s`, '#2ecc71', `${c.label} fitted · clean stop`); radio('pitOut'); }
+      else { toast(`${payload.time.toFixed(2)}s`, '#ff3b3b', `${c.label} fitted · ${payload.misses} wheel gun problem${payload.misses > 1 ? 's' : ''}`); radio('pitSlow'); }
+      break;
+    }
     case 'rainStart': radio('rainStart'); toast('RAIN', '#7fb2ff'); audio.play('isthatglock', { volume: 0.9, minGap: 30 }); break;
     case 'rainStop': radio('rainStop'); break;
     case 'compound': radio('compound', { compound: COMPOUNDS[payload.compound].label.toLowerCase() + 's' }); break;
@@ -187,6 +202,24 @@ input.on('confirm', () => {
 input.on('tap', () => { if (state === 'title') startGame(); else if (state === 'paused') resume(); });
 input.on('restart', () => { if (state === 'over' || state === 'paused') startGame(); });
 input.on('pause', () => { if (state === 'playing') pause(); else if (state === 'paused') resume(); });
+input.on('pit', () => { if (state === 'playing' && world.pit.phase !== 'stop') world.requestPit(); });
+input.on('action', () => { if (state === 'playing') world.pitAction(); });
+input.on('tap', () => { if (state === 'playing') world.pitAction(); });
+const boxBtn = $('#boxBtn');
+boxBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); if (state === 'playing') world.requestPit(); });
+boxBtn.addEventListener('click', (e) => e.preventDefault());
+/** Shows the on-screen BOX button while racing; lit only when the window is open. */
+function syncBoxButton() {
+  const racing = state === 'playing' && !world.gameOver;
+  boxBtn.hidden = !racing || world.pit.inLane;
+  if (!racing) return;
+  boxBtn.classList.toggle('open', world.pit.open);
+  boxBtn.classList.toggle('requested', world.pit.requested);
+  const nc = COMPOUNDS[world.nextCompound];
+  boxBtn.querySelector('b').textContent = world.pit.requested ? 'BOXING…' : world.pit.open ? 'BOX BOX' : 'BOX';
+  boxBtn.querySelector('span').textContent = world.pit.open ? `fit ${nc.label.toLowerCase()}s · B`
+    : world.pit.cooldown > 0 ? 'fresh tyres — stay out' : `window in ${Math.ceil(world.pitCountdown())}s`;
+}
 input.on('music', () => { audio.init(); hud.musicOn = audio.toggleMusic(); syncToggles(); });
 input.on('sfx', () => { audio.init(); audio.toggleSfx(); syncToggles(); });
 input.on('compound', (i) => { if (state === 'playing') world.setNextCompound(COMPOUND_ORDER[i]); });
@@ -280,6 +313,7 @@ function frame(now) {
     demoWorld.update(dt, demoInput);
     if (demoWorld.gameOver) { demoWorld = new World(() => {}); demoWorld.resize(renderer.view.width, renderer.view.height); }
     renderer.render(demoWorld, null, dt);
+    boxBtn.hidden = true;
   } else {
     const st = {
       ...input.state,
@@ -291,6 +325,7 @@ function frame(now) {
     if (hud.toast) hud.toast.age += dt;
     hud.musicOn = audio.musicOn;
     renderer.render(world, hud, dt);
+    syncBoxButton();
     // audio follows the sim
     const ratio = clamp(world.speed / SPEED.max, 0, 1);
     audio.updateEngine(dt, ratio, state === 'playing' && !world.pit.inLane || (state === 'playing' && world.pit.phase !== 'stop'));

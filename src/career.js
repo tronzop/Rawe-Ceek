@@ -18,6 +18,8 @@ export const TROPHIES = [
   { id: 'p1', name: 'P1', desc: 'Reach P1: nineteen overtakes in one run.', check: (c, r) => r.overtakes >= 19 },
   { id: 'podium', name: 'Podium', desc: 'Score 5000 points in one run.', check: (c, r) => r.score >= 5000 },
   { id: 'checking', name: 'We are checking', desc: 'Suffer three botched pit stops over your career.', check: (c) => c.slowStops >= 3 },
+  { id: 'subtwo', name: 'Sub-two', desc: 'A pit stop under 2.0 seconds. Not a Ferrari thing.', check: (c, r) => r.recordStops >= 1 },
+  { id: 'pitcrew', name: 'Pit crew of the year', desc: 'Four perfect wheel guns in one stop.', check: (c, r) => r.perfectStops >= 1 },
   { id: 'marathon', name: 'Rawe Ceek every week', desc: 'Drive 50 km over your career.', check: (c) => c.metres >= 50000 },
 ];
 
@@ -29,6 +31,7 @@ export const EMPTY_CAREER = () => ({
 export const EMPTY_RUN = () => ({
   gps: 0, pushes: 0, punctures: 0, stops: 0, slowStops: 0, rainTime: 0, nightTime: 0, scClean: 0, scPeriods: 0,
   penalties: 0, teammatePasses: 0, legendPasses: 0, towEnergy: 0, overtakes: 0, score: 0, metres: 0,
+  recordStops: 0, cleanStops: 0, perfectStops: 0,
 });
 
 const load = () => {

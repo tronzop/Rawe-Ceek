@@ -2,12 +2,12 @@
 // It knows nothing about the canvas or audio; it reports interesting moments
 // through `emit(event, payload)` so the presentation layer can react.
 import {
-  COMPOUNDS, COMPOUND_ORDER, ERS, GP, PIT, PLAYER, RIVAL_AI, SAFETY_CAR, SCORING, SCORING_EXTRA, SLIPSTREAM,
+  COMPOUNDS, COMPOUND_ORDER, ERS, GP, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SCORING, SCORING_EXTRA, SLIPSTREAM,
   SPAWN, SPEED, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WEATHER, WORLD,
 } from './config.js';
 import {
   baseSpeed, clamp, gpsCompleted, gripFactor, lerp, nextPitWindowIn, pick, pickHazard, pitWindowOpen, rand, rectCircleGap,
-  rectGap, playerSpeed, spawnInterval, tempGrip, towFactor, venueIndexAt, wearDelta,
+  rectGap, playerSpeed, spawnInterval, tempGrip, towFactor, venueIndexAt, wearDelta, judgeWheel, sweepPos, stopSummary,
 } from './logic.js';
 import { EMPTY_RUN } from './career.js';
 import { DRIVERS, LEGEND_BONUS, LEGEND_CHANCE, TEAMS, teamOf } from './grid.js';
@@ -72,7 +72,7 @@ export class World {
     this.tyre = { compound: 'medium', wear: 0, punctured: false, temp: 1 };
     this.nextCompound = 'medium';
     this.ers = { charge: ERS.max, boosting: false };
-    this.pit = { open: false, wasOpen: false, inLane: false, phase: 'none', timer: 0, stopFor: 0, slow: false, stops: 0 };
+    this.pit = { open: false, wasOpen: false, inLane: false, phase: 'none', timer: 0, stopFor: 0, slow: false, stops: 0, requested: false, game: null, cooldown: 0 };
     this.player = {
       x: this.width * WORLD.playerX,
       y: (this.trackTop + this.trackBottom) / 2,
@@ -130,6 +130,35 @@ export class World {
   cycleCompound() {
     const i = COMPOUND_ORDER.indexOf(this.nextCompound);
     this.setNextCompound(COMPOUND_ORDER[(i + 1) % COMPOUND_ORDER.length]);
+  }
+
+  /** Wheel-gun trigger during a stop (Space / B / tap). Returns the judgement or null. */
+  pitAction() {
+    const g = this.pit.game;
+    if (!g || this.pit.phase !== 'stop' || g.wheel >= PITGAME.wheels.length || g.hold > 0) return null;
+    return this.resolveWheel(judgeWheel(sweepPos(g.t), g.jammed[g.wheel]), false);
+  }
+  resolveWheel(result, timedOut) {
+    const g = this.pit.game;
+    const index = g.wheel;
+    g.results.push(result);
+    g.lastResult = result;
+    g.flash = 1;
+    g.wheel += 1;
+    // the wheel takes its time; a miss is a cross-threaded nut and a very long second
+    g.hold = PITGAME.time[result] + (g.wheel >= PITGAME.wheels.length ? PITGAME.time.base : 0);
+    if (result === 'miss') this.shake = 0.35;
+    this.emit('pitWheel', { index, wheel: PITGAME.wheels[index], result, timedOut, jammed: g.jammed[index] });
+    return result;
+  }
+
+  /** Box this lap: if the window is open the car drives itself to the pit entry. */
+  requestPit() {
+    if (this.gameOver || this.pit.inLane) return false;
+    if (!this.pit.open) { this.emit('pitDenied'); return false; }
+    this.pit.requested = true;
+    this.emit('pitRequested');
+    return true;
   }
 
   addPopup(x, y, text, color = '#ffd400') {
@@ -292,7 +321,8 @@ export class World {
   }
 
   updatePit(dt, input) {
-    const open = pitWindowOpen(this.elapsed);
+    if (this.pit.cooldown > 0) this.pit.cooldown = Math.max(0, this.pit.cooldown - dt);
+    const open = pitWindowOpen(this.elapsed) && this.pit.cooldown <= 0;
     if (open && !this.pit.wasOpen && !this.pit.inLane) this.emit('pitOpen');
     this.pit.wasOpen = open;
     this.pit.open = open;
@@ -300,9 +330,18 @@ export class World {
     const pit = this.pit;
 
     if (!pit.inLane) {
-      // Entering: window open and the player pushes above the track edge.
-      if (open && input.up && p.y <= this.trackTop + 6) {
+      // "Box box": a pit request steers the car up to the entry by itself.
+      if (pit.requested && !open) { pit.requested = false; this.emit('pitDenied'); }
+      // the highest the car can steer (see the clamp in updatePlayer)
+      const entryY = this.trackTop + PLAYER.height / 2 - 12;
+      if (pit.requested) {
+        p.y += (entryY - p.y) * Math.min(1, dt * 6);
+        p.vy = 0;
+      }
+      // Entering: window open and the car is at the top edge (steered or requested).
+      if (open && (input.up || pit.requested) && p.y <= entryY + 2) {
         pit.inLane = true;
+        pit.requested = false;
         pit.phase = 'entry';
         pit.timer = PIT.laneTravel * 0.45;
         this.ers.boosting = false;
@@ -318,27 +357,54 @@ export class World {
       case 'entry':
         if (pit.timer <= 0) {
           pit.phase = 'stop';
-          pit.slow = Math.random() < PIT.slowStopChance;
-          pit.stopFor = rand(PIT.stopTime.min, PIT.stopTime.max) + (pit.slow ? rand(PIT.slowStopExtra.min, PIT.slowStopExtra.max) : 0);
-          pit.timer = pit.stopFor;
-          if (pit.slow) this.run.slowStops += 1;
-          this.emit('pitStop', { slow: pit.slow, duration: pit.stopFor });
+          pit.slow = false;
+          // the mini-game: four wheels, one at a time, fire the gun in the zone
+          pit.game = {
+            wheel: 0, t: 0, results: [], flash: 0, lastResult: null, total: 0, hold: 0,
+            jammed: PITGAME.wheels.map(() => Math.random() < PITGAME.jamChance),
+          };
+          this.emit('pitStop', { game: true });
         }
         break;
-      case 'stop':
-        if (pit.timer <= 0) {
-          this.tyre = { compound: this.nextCompound, wear: 0, punctured: false, temp: 0 };
-          this.player.damage = 0;
-          pit.stops += 1;
-          pit.phase = 'exit';
-          pit.timer = PIT.laneTravel * 0.55;
-          this.emit('pitOut', { compound: this.nextCompound });
+      case 'stop': {
+        const g = pit.game;
+        g.total += dt;
+        g.flash = Math.max(0, g.flash - dt * 4);
+        if (g.wheel < PITGAME.wheels.length) {
+          if (g.hold > 0) {
+            // waiting out the time the last wheel cost before the next gun comes in
+            g.hold -= dt;
+            if (g.hold <= 0) g.t = 0;
+          } else {
+            g.t += dt;
+            if (g.t >= PITGAME.window) this.resolveWheel('miss', true); // too slow: mechanic sorts it, slowly
+          }
+        } else {
+          g.hold -= dt;
+          if (g.hold <= 0) {
+            const s = stopSummary(g.results);
+            this.tyre = { compound: this.nextCompound, wear: 0, punctured: false, temp: 0 };
+            this.player.damage = 0;
+            pit.stops += 1;
+            pit.slow = !s.clean;
+            pit.stopFor = s.time;
+            if (pit.slow) this.run.slowStops += 1;
+            if (s.record) { this.run.recordStops += 1; this.bonus += PITGAME.recordBonus; this.addPopup(p.x, p.y + 60, `+${PITGAME.recordBonus} RECORD STOP`, '#7df9ff'); }
+            else if (s.clean) { this.run.cleanStops += 1; this.bonus += PITGAME.cleanBonus; this.addPopup(p.x, p.y + 60, `+${PITGAME.cleanBonus} CLEAN STOP`, '#2ecc71'); }
+            if (s.perfects === PITGAME.wheels.length) this.run.perfectStops += 1;
+            pit.phase = 'exit';
+            pit.timer = PIT.laneTravel * 0.55;
+            pit.game = null;
+            this.emit('pitOut', { compound: this.nextCompound, ...s });
+          }
         }
         break;
+      }
       case 'exit':
         if (pit.timer <= 0) {
           pit.inLane = false;
           pit.phase = 'none';
+          pit.cooldown = PIT.cooldown; // fresh tyres: the wall will not take you back straight away
           p.y = this.trackTop + 30;
           this.emit('coldTyres');
         }
@@ -623,7 +689,8 @@ export class World {
       // overtake bookkeeping: rival fully behind the player
       if (hz.type === 'rival' && !hz.passed && !hz.fromBehind && hz.x + hz.w / 2 < prect.x) {
         hz.passed = true;
-        this.onOvertake(hz);
+        // cars drifting past while you sit in the pits are not overtakes
+        if (!this.pit.inLane) this.onOvertake(hz);
       }
       survivors.push(hz);
     }

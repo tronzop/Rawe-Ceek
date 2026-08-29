@@ -105,3 +105,21 @@ input:focus { outline: 2px solid var(--red); outline-offset: 1px; }
 .unlocked .kicker { color: var(--yellow); margin-bottom: 2px; }
 @keyframes pop { from { transform: scale(0.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @media (max-width: 900px) { .trophies { grid-template-columns: 1fr; } }
+
+/* on-screen BOX button (bottom centre, over the canvas) */
+.box {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 150px;
+  padding: 10px 22px; border-radius: 999px; border: 2px solid rgba(255,255,255,0.18);
+  background: rgba(8,10,16,0.82); color: var(--muted); font: 700 12px var(--font); letter-spacing: 0.08em;
+  cursor: pointer; user-select: none; touch-action: manipulation; transition: background 0.2s, border-color 0.2s, color 0.2s, transform 0.08s;
+}
+.box[hidden] { display: none; }
+.box:not(.open):not(.requested) { opacity: 0.72; }
+.box b { font-size: 18px; letter-spacing: 0.12em; }
+.box span { font-weight: 500; letter-spacing: 0; text-transform: none; font-size: 11px; opacity: 0.8; }
+.box.open { background: #1f9d55; border-color: #7ff0b0; color: #fff; animation: boxpulse 0.9s ease-in-out infinite; }
+.box.requested { background: var(--yellow); border-color: #fff; color: #111; animation: none; }
+.box:active { transform: translateX(-50%) translateY(1px); }
+@keyframes boxpulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(46,204,113,0.6); } 50% { box-shadow: 0 0 0 12px rgba(46,204,113,0); } }
+@media (max-width: 900px) { .box { bottom: 128px; } }
