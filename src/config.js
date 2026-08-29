@@ -131,14 +131,20 @@ export const STORAGE_KEYS = {
  * headlights and floodlights; `rainBias` scales the chance of rain.
  */
 export const VENUES = [
-  { id: 'monza', name: 'Monza', flag: '🇮🇹', skyline: 'trees', night: false, rainBias: 1.0, sky: ['#6fb6ff', '#dcefff'], horizon: '#9fd08a', ground: '#2f7d32', barrier: '#9aa0ad' },
-  { id: 'monaco', name: 'Monaco', flag: '🇲🇨', skyline: 'harbour', night: false, rainBias: 0.5, sky: ['#5aa9ff', '#cfe7ff'], horizon: '#7db7e8', ground: '#5c6470', barrier: '#c7ccd6' },
-  { id: 'silverstone', name: 'Silverstone', flag: '🇬🇧', skyline: 'stands', night: false, rainBias: 1.7, sky: ['#8aa2b8', '#d9e1ea'], horizon: '#b6c2ce', ground: '#3f8a3c', barrier: '#9aa0ad' },
-  { id: 'spa', name: 'Spa-Francorchamps', flag: '🇧🇪', skyline: 'forest', night: false, rainBias: 2.4, sky: ['#6f8fae', '#cfdbe6'], horizon: '#4f7a4a', ground: '#2c6b2f', barrier: '#8e949f' },
-  { id: 'suzuka', name: 'Suzuka', flag: '🇯🇵', skyline: 'wheel', night: false, rainBias: 1.3, sky: ['#7cc0ff', '#e6f2ff'], horizon: '#93c58f', ground: '#357f39', barrier: '#9aa0ad' },
-  { id: 'singapore', name: 'Singapore', flag: '🇸🇬', skyline: 'city', night: true, rainBias: 1.5, sky: ['#0b1030', '#3a2757'], horizon: '#1b2148', ground: '#33383f', barrier: '#5f6672' },
-  { id: 'interlagos', name: 'Interlagos', flag: '🇧🇷', skyline: 'hills', night: false, rainBias: 2.0, sky: ['#5f9fe0', '#d3e6f8'], horizon: '#6ea56a', ground: '#2f7d32', barrier: '#9aa0ad' },
-  { id: 'bahrain', name: 'Bahrain', flag: '🇧🇭', skyline: 'desert', night: true, rainBias: 0.0, sky: ['#0a0d22', '#3b2a3f'], horizon: '#2a2238', ground: '#8f7c55', barrier: '#5f6672' },
+  { id: 'monza', name: 'Monza', flag: '🇮🇹', skyline: 'trees', night: false, rainBias: 1.0, sky: ['#6fb6ff', '#dcefff'], horizon: '#9fd08a', ground: '#2f7d32', barrier: '#9aa0ad', asphalt: '#3a3d44' },
+  { id: 'monaco', name: 'Monaco', flag: '🇲🇨', skyline: 'harbour', night: false, rainBias: 0.5, sky: ['#5aa9ff', '#cfe7ff'], horizon: '#7db7e8', ground: '#5c6470', barrier: '#c7ccd6', asphalt: '#3d3f46' },
+  { id: 'zandvoort', name: 'Zandvoort', flag: '🇳🇱', skyline: 'dunes', night: false, rainBias: 1.6, sky: ['#7fb5e6', '#e3eef7'], horizon: '#d8c78f', ground: '#7f9a4a', barrier: '#e07b1a', asphalt: '#3b3c42' },
+  { id: 'silverstone', name: 'Silverstone', flag: '🇬🇧', skyline: 'stands', night: false, rainBias: 1.7, sky: ['#8aa2b8', '#d9e1ea'], horizon: '#b6c2ce', ground: '#3f8a3c', barrier: '#9aa0ad', asphalt: '#40434a' },
+  { id: 'spa', name: 'Spa-Francorchamps', flag: '🇧🇪', skyline: 'forest', night: false, rainBias: 2.4, sky: ['#6f8fae', '#cfdbe6'], horizon: '#4f7a4a', ground: '#2c6b2f', barrier: '#8e949f', asphalt: '#34373f' },
+  { id: 'baku', name: 'Baku', flag: '🇦🇿', skyline: 'oldcity', night: false, rainBias: 0.3, sky: ['#5fa8e8', '#d9ecfa'], horizon: '#c9b48a', ground: '#6b6f6a', barrier: '#b8bcc4', asphalt: '#3c3e45' },
+  { id: 'suzuka', name: 'Suzuka', flag: '🇯🇵', skyline: 'wheel', night: false, rainBias: 1.3, sky: ['#7cc0ff', '#e6f2ff'], horizon: '#93c58f', ground: '#357f39', barrier: '#9aa0ad', asphalt: '#3a3d44' },
+  { id: 'singapore', name: 'Singapore', flag: '🇸🇬', skyline: 'city', night: true, rainBias: 1.5, sky: ['#0b1030', '#3a2757'], horizon: '#1b2148', ground: '#33383f', barrier: '#5f6672', asphalt: '#2a2c34' },
+  { id: 'austin', name: 'Austin', flag: '🇺🇸', skyline: 'tower', night: false, rainBias: 0.8, sky: ['#63a9f0', '#f3e2c0'], horizon: '#a9b36a', ground: '#7d8f3f', barrier: '#c02c2c', asphalt: '#4a4744' },
+  { id: 'mexico', name: 'Mexico City', flag: '🇲🇽', skyline: 'stadium', night: false, rainBias: 0.9, sky: ['#5b9be0', '#f0d9b0'], horizon: '#8a7a5c', ground: '#5f8f3a', barrier: '#1f8a4c', asphalt: '#3e3d43' },
+  { id: 'interlagos', name: 'Interlagos', flag: '🇧🇷', skyline: 'hills', night: false, rainBias: 2.0, sky: ['#5f9fe0', '#d3e6f8'], horizon: '#6ea56a', ground: '#2f7d32', barrier: '#9aa0ad', asphalt: '#3a3d44' },
+  { id: 'vegas', name: 'Las Vegas', flag: '🇺🇸', skyline: 'neon', night: true, rainBias: 0.1, sky: ['#070a1c', '#2a1442'], horizon: '#1a1330', ground: '#3a3740', barrier: '#4c4c5c', asphalt: '#26272f' },
+  { id: 'melbourne', name: 'Melbourne', flag: '🇦🇺', skyline: 'lake', night: false, rainBias: 1.1, sky: ['#6fb3f0', '#dfeefb'], horizon: '#5d9fd0', ground: '#4a8a3a', barrier: '#9aa0ad', asphalt: '#3a3d44' },
+  { id: 'bahrain', name: 'Bahrain', flag: '🇧🇭', skyline: 'desert', night: true, rainBias: 0.0, sky: ['#0a0d22', '#3b2a3f'], horizon: '#2a2238', ground: '#8f7c55', barrier: '#5f6672', asphalt: '#2e2d33' },
 ];
 
 export const GP = {
@@ -153,7 +159,10 @@ export const SAFETY_CAR = {
   chancePerSecond: 0.012,
   minGap: 45, // seconds between periods
   duration: { min: 9, max: 14 },
-  speedCap: 0.62, // fraction of base speed while deployed
+  speedCap: 0.62, // fraction of base speed while deployed (at neutral throttle; lifting goes slower)
+  liftFloor: 0.7, // lifting fully under the safety car gets you down to this fraction of the cap
+  bunchSpread: [0.98, 1.05], // rivals under the safety car run at this fraction of the cap (some hold, some pull away)
+  graceSeconds: 1.5, // no penalty for passes in the first moments after the yellow
   penaltySeconds: 5,
   penaltyCap: 0.5, // speed cap while serving a penalty
   restartWindow: 4, // seconds after the restart where overtakes pay double

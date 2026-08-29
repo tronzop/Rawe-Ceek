@@ -92,6 +92,7 @@ export class Renderer {
       ctx.fillStyle = `rgba(255,255,255,${0.75 * world.flash})`;
       ctx.fillRect(0, 0, W, H);
     }
+    this.drawVenueCard(world, W, H);
     if (hud) this.drawHud(world, hud, W, H);
   }
 
@@ -148,16 +149,28 @@ export class Renderer {
       }
     }
 
-    // skyline: cross-fade previous → current venue
+    // skyline: the new venue wipes in from the right (the direction the scenery arrives from)
     const y0 = world.pitTop * 0.06;
     const y1 = world.pitTop * 0.62;
     if (world.venueBlend < 1) {
-      ctx.globalAlpha = 1 - world.venueBlend;
+      const wipe = easeInOut(clamp01(world.venueBlend / 0.7)); // the wipe finishes early; the palettes keep blending
+      const wx = W * (1 - wipe);
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 0, wx, world.pitTop); ctx.clip();
       this.drawSkyline(world.prevVenue, world, W, y0, y1);
+      ctx.restore();
+      ctx.save(); ctx.beginPath(); ctx.rect(wx, 0, W - wx, world.pitTop); ctx.clip();
+      this.drawSkyline(world.venue, world, W, y0, y1);
+      ctx.restore();
+      // glowing leading edge
+      if (wipe > 0 && wipe < 1) {
+        const g = ctx.createLinearGradient(wx - 40, 0, wx + 6, 0);
+        g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(255,255,255,0.85)');
+        ctx.fillStyle = g; ctx.fillRect(wx - 40, 0, 46, world.pitTop);
+        ctx.fillStyle = '#ffd400'; ctx.fillRect(wx, 0, 4, world.pitTop);
+      }
+    } else {
+      this.drawSkyline(world.venue, world, W, y0, y1);
     }
-    ctx.globalAlpha = Math.min(1, world.venueBlend);
-    this.drawSkyline(world.venue, world, W, y0, y1);
-    ctx.globalAlpha = 1;
 
     // grandstand: repeating blocks with a crowd noise texture
     const gsTop = world.pitTop * 0.56;
@@ -330,9 +343,157 @@ export class Renderer {
           for (let f = 0; f < 6; f++) { const a = -Math.PI * 0.15 - f * 0.3; ctx.beginPath(); ctx.moveTo(px + 4, y1 - h * 0.6); ctx.quadraticCurveTo(px + 4 + Math.cos(a) * 22, y1 - h * 0.6 + Math.sin(a) * 22 - 10, px + 4 + Math.cos(a) * 34, y1 - h * 0.6 + Math.sin(a) * 34 + 6); ctx.stroke(); }
         });
         break;
+      case 'dunes': // Zandvoort: sand dunes, beach grass, an orange grandstand and a windmill
+        tile(380, (x, i) => {
+          ctx.fillStyle = `hsl(42 45% ${62 + hash(i) * 12}%)`;
+          ctx.beginPath(); ctx.ellipse(x + 190, y1 - h * 0.05, 240, h * 0.5 + hash(i + 1) * h * 0.15, 0, Math.PI, 0); ctx.fill();
+        });
+        tile(34, (x, i) => {
+          ctx.strokeStyle = `hsl(80 30% ${40 + hash(i) * 15}%)`; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(x, y1 - h * 0.2); ctx.lineTo(x + 4 + hash(i + 1) * 6, y1 - h * 0.2 - 10 - hash(i + 2) * 12); ctx.stroke();
+        });
+        tile(760, (x) => {
+          // orange army stand
+          ctx.fillStyle = '#e07b1a'; ctx.fillRect(x + 80, y1 - h * 0.55, 220, h * 0.32);
+          ctx.fillStyle = '#2b2f3a'; ctx.fillRect(x + 80, y1 - h * 0.6, 220, 8);
+          ctx.fillStyle = '#ffd68a'; for (let c = 0; c < 18; c++) for (let r = 0; r < 3; r++) if (hash(c * 7 + r) > 0.3) ctx.fillRect(x + 88 + c * 12, y1 - h * 0.52 + r * 14, 6, 8);
+          // windmill
+          const mx = x + 560, my = y1 - h * 0.62;
+          ctx.fillStyle = '#5c4a3a'; ctx.beginPath(); ctx.moveTo(mx - 26, y1 - h * 0.18); ctx.lineTo(mx + 26, y1 - h * 0.18); ctx.lineTo(mx + 14, my); ctx.lineTo(mx - 14, my); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = '#efe6d2'; ctx.lineWidth = 3;
+          for (let b = 0; b < 4; b++) { const a = this.time * 0.9 + (b * Math.PI) / 2; ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(mx + Math.cos(a) * h * 0.34, my + Math.sin(a) * h * 0.34); ctx.stroke(); }
+        });
+        break;
+      case 'oldcity': // Baku: the old city walls and Maiden Tower, Flame Towers behind
+        tile(900, (x, i) => {
+          for (let f = 0; f < 3; f++) {
+            const fx = x + 500 + f * 70, fh = h * (0.85 - f * 0.08);
+            ctx.fillStyle = `hsl(${205 + hash(i + f) * 10} 35% 62%)`;
+            ctx.beginPath(); ctx.moveTo(fx, y1 - h * 0.15); ctx.quadraticCurveTo(fx + 8, y1 - h * 0.15 - fh, fx + 30, y1 - h * 0.15 - fh);
+            ctx.quadraticCurveTo(fx + 44, y1 - h * 0.15 - fh * 0.6, fx + 46, y1 - h * 0.15); ctx.closePath(); ctx.fill();
+          }
+        });
+        tile(320, (x, i) => {
+          ctx.fillStyle = `hsl(38 30% ${64 + hash(i) * 8}%)`;
+          ctx.fillRect(x, y1 - h * 0.42, 320, h * 0.28);
+          for (let c = 0; c < 10; c++) ctx.fillRect(x + c * 32, y1 - h * 0.48, 18, h * 0.07);
+          if (hash(i + 3) > 0.5) { ctx.fillRect(x + 120, y1 - h * 0.8, 44, h * 0.4); for (let c = 0; c < 3; c++) ctx.fillRect(x + 118 + c * 16, y1 - h * 0.85, 10, h * 0.06); }
+          ctx.fillStyle = 'rgba(70,50,30,0.5)';
+          for (let c = 0; c < 6; c++) ctx.fillRect(x + 20 + c * 50, y1 - h * 0.34, 10, 14);
+        });
+        break;
+      case 'tower': // Austin: hill country and the red-and-white observation tower
+        tile(640, (x, i) => {
+          ctx.fillStyle = `hsl(75 30% ${36 + hash(i) * 10}%)`;
+          ctx.beginPath(); ctx.ellipse(x + 320, y1 - h * 0.08, 360, h * 0.42, 0, Math.PI, 0); ctx.fill();
+        });
+        tile(980, (x) => {
+          const tx = x + 420, base = y1 - h * 0.14, top = y1 - h * 1.05;
+          ctx.fillStyle = '#d8dbe2';
+          ctx.beginPath(); ctx.moveTo(tx - 10, base); ctx.lineTo(tx + 10, base); ctx.lineTo(tx + 4, top); ctx.lineTo(tx - 4, top); ctx.closePath(); ctx.fill();
+          for (let k = 0; k < 9; k++) { ctx.fillStyle = k % 2 ? '#c02c2c' : '#f2f2f2'; ctx.fillRect(tx - 9 + k * 0.6, top + k * (base - top) / 9, 18 - k * 1.2, (base - top) / 9); }
+          // the swooping veil ramps
+          ctx.strokeStyle = '#c02c2c'; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.moveTo(tx - 4, top + 18); ctx.bezierCurveTo(tx - 120, top + 40, tx - 160, base - 40, tx - 200, base); ctx.stroke();
+          ctx.fillStyle = '#f2f2f2'; ctx.fillRect(tx - 30, top - 4, 60, 10);
+          ctx.fillStyle = '#c02c2c'; ctx.fillRect(tx - 2, top - 30, 4, 26);
+        });
+        break;
+      case 'stadium': // Mexico City: the Foro Sol bowl full of fans, volcanoes behind
+        tile(1100, (x, i) => {
+          for (const [ox, vh] of [[240, 0.95], [700, 0.8]]) {
+            ctx.fillStyle = `hsl(240 15% ${52 + hash(i + ox) * 8}%)`;
+            ctx.beginPath(); ctx.moveTo(x + ox - 260, y1 - h * 0.15); ctx.lineTo(x + ox, y1 - h * 0.15 - h * vh); ctx.lineTo(x + ox + 260, y1 - h * 0.15); ctx.closePath(); ctx.fill();
+            ctx.fillStyle = '#f4f4f8';
+            ctx.beginPath(); ctx.moveTo(x + ox - 40, y1 - h * 0.15 - h * vh * 0.85); ctx.lineTo(x + ox, y1 - h * 0.15 - h * vh); ctx.lineTo(x + ox + 40, y1 - h * 0.15 - h * vh * 0.85); ctx.closePath(); ctx.fill();
+          }
+        });
+        tile(520, (x, i) => {
+          // the bowl: a grey shell with tiers of green/white/red fans stacked inside it
+          ctx.fillStyle = '#6b6f76';
+          ctx.beginPath(); ctx.ellipse(x + 260, y1 - h * 0.12, 240, h * 0.5, 0, Math.PI, 0); ctx.fill();
+          for (let r = 0; r < 5; r++) {
+            const rx = 232 - r * 30, ry = h * (0.47 - r * 0.07);
+            for (let c = 0; c < 26 - r * 2; c++) {
+              const seed = i * 131 + r * 29 + c;
+              ctx.fillStyle = hash(seed) > 0.5 ? '#1f8a4c' : hash(seed + 1) > 0.5 ? '#f4f4f4' : '#d3282e';
+              const ang = Math.PI + ((c + 0.5) / (26 - r * 2)) * Math.PI;
+              ctx.fillRect(x + 260 + Math.cos(ang) * rx - 2, y1 - h * 0.12 + Math.sin(ang) * ry, 4, 4);
+            }
+          }
+        });
+        break;
+      case 'neon': { // Las Vegas: the Sphere, hotel towers and blinking neon
+        tile(140, (x, i) => {
+          const bh = h * (0.45 + hash(i) * 0.6);
+          ctx.fillStyle = `hsl(${260 + hash(i + 1) * 40} 25% ${14 + hash(i + 2) * 8}%)`;
+          ctx.fillRect(x + 6, y1 - h * 0.15 - bh, 110, bh);
+          for (let r = 0; r < bh / 11; r++) for (let c = 0; c < 6; c++) if (hash(i * 17 + r * 5 + c) > 0.5) { ctx.fillStyle = `hsl(${(i * 47 + c * 60) % 360} 90% 65%)`; ctx.fillRect(x + 14 + c * 16, y1 - h * 0.15 - bh + 5 + r * 11, 8, 5); }
+          // neon sign strip, blinking
+          ctx.fillStyle = `hsl(${(i * 83) % 360} 100% 60%)`;
+          const ga = ctx.globalAlpha; ctx.globalAlpha = ga * (0.5 + 0.5 * Math.sin(this.time * 4 + i * 1.7) > 0.7 ? 1 : 0.35);
+          ctx.fillRect(x + 6, y1 - h * 0.15 - bh + 14, 110, 5);
+          ctx.globalAlpha = ga;
+        });
+        tile(1200, (x) => {
+          const cx = x + 640, cy = y1 - h * 0.5, r = h * 0.36;
+          const g = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.1, cx, cy, r);
+          const hue = (this.time * 40) % 360;
+          g.addColorStop(0, `hsl(${hue} 90% 70%)`); g.addColorStop(1, `hsl(${(hue + 120) % 360} 80% 35%)`);
+          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+        });
+        break;
+      }
+      case 'lake': // Melbourne: Albert Park lake with the CBD towers behind
+        tile(160, (x, i) => {
+          const bh = h * (0.4 + hash(i) * 0.65);
+          ctx.fillStyle = `hsl(210 20% ${45 + hash(i + 1) * 25}%)`;
+          ctx.fillRect(x + 10, y1 - h * 0.3 - bh, 60 + hash(i + 2) * 60, bh);
+          ctx.fillStyle = 'rgba(255,255,255,0.35)';
+          for (let r = 0; r < bh / 14; r++) ctx.fillRect(x + 16, y1 - h * 0.3 - bh + 6 + r * 14, 40 + hash(i + 2) * 50, 3);
+          if (hash(i + 4) > 0.75) { ctx.fillStyle = '#d8dbe2'; ctx.fillRect(x + 36, y1 - h * 0.3 - bh - 26, 3, 26); }
+        });
+        ctx.fillStyle = '#4b90c9';
+        ctx.fillRect(0, y1 - h * 0.32, W, h * 0.34);
+        tile(260, (x, i) => {
+          ctx.fillStyle = 'rgba(255,255,255,0.35)';
+          ctx.fillRect(x + 30 + hash(i) * 120, y1 - h * 0.24 + hash(i + 1) * h * 0.14, 40 + hash(i + 2) * 50, 2);
+          ctx.fillStyle = '#2f7d32';
+          ctx.beginPath(); ctx.arc(x + 200, y1 - h * 0.02, 26 + hash(i + 3) * 14, Math.PI, 0); ctx.fill();
+        });
+        break;
       default:
         break;
     }
+  }
+
+  /** Round card: slides in from the right during the venue morph — flag, round number, name — with chequered edges. */
+  drawVenueCard(world, W, H) {
+    const b = world.venueBlend;
+    if (b >= 1 || world.gps === 0) return;
+    const { ctx } = this;
+    const inT = easeOut(clamp01(b / 0.22)); // slide in
+    const outT = easeInOut(clamp01((b - 0.72) / 0.28)); // slide out to the left
+    const cw = Math.min(W * 0.72, 640), ch = 92;
+    const cx = W / 2 + (1 - inT) * (W * 0.6 + cw) - outT * (W * 0.6 + cw);
+    const cy = H * 0.3;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.fillStyle = 'rgba(8,10,16,0.88)';
+    roundRect(ctx, -cw / 2, -ch / 2, cw, ch, 12); ctx.fill();
+    // chequered end caps
+    for (const side of [-1, 1]) for (let r = 0; r < 4; r++) for (let c = 0; c < 2; c++) {
+      ctx.fillStyle = (r + c) % 2 ? '#fff' : '#111';
+      ctx.fillRect(side * (cw / 2 - 26) + (side < 0 ? c * 12 : -12 - c * 12), -ch / 2 + 10 + r * ((ch - 20) / 4), 12, (ch - 20) / 4);
+    }
+    ctx.fillStyle = world.venue.barrier; ctx.fillRect(-cw / 2 + 30, ch / 2 - 8, cw - 60, 4);
+    ctx.fillStyle = '#ffd400'; ctx.fillRect(-cw / 2 + 30, ch / 2 - 8, (cw - 60) * clamp01(b / 0.72), 4);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#c9ced9'; ctx.font = `bold 12px ${FONT}`;
+    ctx.fillText(`ROUND ${world.gps + 1}  ·  ${world.venue.night ? 'NIGHT RACE' : world.venue.rainBias > 1.5 ? 'RAIN LIKELY' : 'GRAND PRIX'}`, 0, -ch / 2 + 22);
+    ctx.fillStyle = '#fff'; ctx.font = `900 34px ${FONT}`;
+    ctx.fillText(`${world.venue.flag}  ${world.venue.name.toUpperCase()}`, 0, 12);
+    ctx.restore();
   }
 
   drawPitLane(world, W) {
@@ -394,7 +555,7 @@ export class Renderer {
     const top = world.trackTop;
     const bottom = world.trackBottom;
     const wet = world.rain;
-    ctx.fillStyle = lerpColor(lerpColor('#3a3d44', '#23262d', wet), '#1c1e25', world.night * 0.5);
+    ctx.fillStyle = lerpColor(lerpColor(this.vcolor(world, 'asphalt'), '#23262d', wet), '#1c1e25', world.night * 0.5);
     ctx.fillRect(0, top, W, bottom - top);
     // subtle asphalt banding for motion feel
     ctx.fillStyle = 'rgba(255,255,255,0.025)';
@@ -1329,6 +1490,9 @@ export class Renderer {
 }
 
 // ---------- helpers ----------
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);

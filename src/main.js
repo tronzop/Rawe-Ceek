@@ -207,7 +207,7 @@ function onWorldEvent(evt, payload = {}) {
     case 'compound': radio('compound', { compound: COMPOUNDS[payload.compound].label.toLowerCase() + 's' }); break;
     // --- expansion ---
     case 'chequered': audio.fanfare(); audio.playAny([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 }); toast('CHEQUERED FLAG', '#fff', `${payload.venue} · +${payload.bonus} · ${GP.points} pts`); radio('chequered'); break;
-    case 'venue': setTimeout(() => { toast(`${payload.venue.flag} ${payload.venue.name.toUpperCase()}`, '#ffd400', `Round ${payload.index + 1} of ${VENUES.length}`); radio('venue', { venue: payload.venue.name }); }, 1800); break;
+    case 'venue': setTimeout(() => radio('venue', { venue: payload.venue.name }), 1800); break; // the renderer shows the round card
     case 'night': setTimeout(() => radio('night'), 4500); break;
     case 'scDeployed': audio.siren(); audio.playAny(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking'); radio('scDeployed'); break;
     case 'scEnding': radio('scEnding'); break;

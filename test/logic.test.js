@@ -131,7 +131,7 @@ test('calendar: venue index loops and GP progress is 0..1', () => {
   assert.ok(gpProgress(GP.lengthMetres * 0.25) > 0.24 && gpProgress(GP.lengthMetres * 0.25) < 0.26);
   assert.equal(gpProgress(GP.lengthMetres), 0);
   for (const v of VENUES) {
-    assert.ok(['trees', 'harbour', 'stands', 'forest', 'wheel', 'city', 'hills', 'desert'].includes(v.skyline), v.id);
+    assert.ok(['trees', 'harbour', 'dunes', 'stands', 'forest', 'oldcity', 'wheel', 'city', 'tower', 'stadium', 'hills', 'neon', 'lake', 'desert'].includes(v.skyline), v.id);
     assert.equal(v.sky.length, 2);
   }
 });
@@ -285,4 +285,25 @@ test('mariachi arrangements are well-formed', async () => {
     assert.notEqual(arr.lead[0], '-', `${id}: loop does not start on a hold`);
   }
   assert.ok(ARRANGEMENTS.jarabe.tempo > ARRANGEMENTS.mariachi.tempo, 'jarabe is jauntier');
+});
+
+test('venues are complete and distinct', async () => {
+  const { VENUES } = await configP;
+  const ids = new Set(VENUES.map((v) => v.id));
+  assert.equal(ids.size, VENUES.length, 'unique ids');
+  assert.equal(new Set(VENUES.map((v) => v.skyline)).size, VENUES.length, 'each venue has its own skyline painter');
+  for (const v of VENUES) {
+    for (const k of ['name', 'flag', 'skyline', 'horizon', 'ground', 'barrier', 'asphalt']) assert.ok(v[k], `${v.id}.${k}`);
+    assert.equal(v.sky.length, 2, `${v.id} sky gradient`);
+    assert.equal(typeof v.night, 'boolean');
+    assert.ok(v.rainBias >= 0);
+  }
+});
+
+test('safety car pace: lifting goes slower than the cap, bunched rivals hold about the cap', async () => {
+  const { SAFETY_CAR, PLAYER } = await configP;
+  assert.ok(SAFETY_CAR.liftFloor < 1 && SAFETY_CAR.liftFloor > 0.4);
+  assert.ok(SAFETY_CAR.bunchSpread[0] > SAFETY_CAR.liftFloor, 'a full lift always drops you behind the slowest bunched rival');
+  assert.ok(SAFETY_CAR.bunchSpread[1] >= 1, 'some rivals pull away rather than fall back into you');
+  assert.ok(PLAYER.throttleRange.min < 1);
 });

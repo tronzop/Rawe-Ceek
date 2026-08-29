@@ -93,7 +93,7 @@ export class World {
     this.night = VENUES[0].night ? 1 : 0;
     this.gps = 0;
     // safety car
-    this.sc = { active: false, phase: 'none', timer: 0, cooldown: SAFETY_CAR.firstAfter, restartTimer: 0, clean: true, car: null };
+    this.sc = { active: false, phase: 'none', timer: 0, cooldown: SAFETY_CAR.firstAfter, restartTimer: 0, grace: 0, clean: true, car: null };
     this.penalty = 0;
     this.cine = 0; // 0..1 pit-entry cinematic blend
     // slipstream
@@ -253,6 +253,7 @@ export class World {
       this.venuePrev = this.venueIndex;
       this.venueIndex = idx;
       this.venueBlend = 0;
+      this.flash = Math.max(this.flash, 0.35);
       this.emit('venue', { venue: this.venue, index: idx });
       if (this.venue.night && !this.prevVenue.night) this.emit('night');
     }
@@ -266,6 +267,7 @@ export class World {
     const sc = this.sc;
     if (this.penalty > 0) this.penalty = Math.max(0, this.penalty - dt);
     if (sc.restartTimer > 0) sc.restartTimer = Math.max(0, sc.restartTimer - dt);
+    if (sc.grace > 0) sc.grace = Math.max(0, sc.grace - dt);
 
     if (!sc.active) {
       sc.cooldown -= dt;
@@ -298,8 +300,11 @@ export class World {
     sc.phase = 'deployed';
     sc.timer = rand(SAFETY_CAR.duration.min, SAFETY_CAR.duration.max);
     sc.clean = true;
+    sc.grace = SAFETY_CAR.graceSeconds;
     sc.car = { x: this.width + 200, y: (this.trackTop + this.trackBottom) / 2, frame: 0 };
     this.ers.boosting = false;
+    // the field bunches up: every rival ahead of you settles to safety-car pace so you can hold station behind it
+    for (const hz of this.hazards) if (hz.type === 'rival' && hz.x > this.player.x) { hz.scPace = rand(...SAFETY_CAR.bunchSpread); hz.weave = false; hz.defend = false; hz.fromBehind = false; }
     this.run.scPeriods += 1;
     // the reason for the yellow: a stranded car on the far side of the track
     const w = PLAYER.width * 0.92;
@@ -514,7 +519,11 @@ export class World {
       ? 0
       : playerSpeed({ elapsed: this.elapsed, throttle: p.throttle, boosting: this.ers.boosting, grip, inPit, spun: p.spin > 0 });
     if (!inPit) target *= 1 + this.tow * SLIPSTREAM.speedBonus;
-    if (this.sc.active && !inPit) target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.speedCap);
+    if (this.sc.active && !inPit) {
+      // capped at safety-car pace; lifting takes you below it so you can drop back from the car ahead
+      const lift = clamp((p.throttle - PLAYER.throttleRange.min) / (1 - PLAYER.throttleRange.min), 0, 1);
+      target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.speedCap * lerp(SAFETY_CAR.liftFloor, 1, lift));
+    }
     if (this.penalty > 0 && !inPit) target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.penaltyCap);
     const accel = target > this.speed ? 2.5 : 4.5;
     this.speed += (target - this.speed) * Math.min(1, dt * accel);
@@ -647,10 +656,11 @@ export class World {
         const h = PLAYER.height * 0.92;
         // slower rivals come from ahead; occasionally a faster one attacks from behind
         const fromBehind = !opts.scRival && Math.random() < 0.25 && t > 20;
-        let rel = fromBehind ? rand(180, 320) : -rand(120, 260) - Math.min(200, t * 1.5);
-        if (opts.scRival) rel = -rand(20, 70); // just a little slower than you: tempting
+        const rel = fromBehind ? rand(180, 320) : -rand(120, 260) - Math.min(200, t * 1.5);
         this.hazards.push({
           id: nextId++, type, x: fromBehind ? -w - 40 : right + w, y: this.laneY(h), w, h, rel, vy: 0,
+          // under the safety car rivals run at (about) its pace in absolute terms, not relative to you
+          scPace: opts.scRival ? rand(...SAFETY_CAR.bunchSpread) : 0,
           team, driver, fromBehind, weave: !opts.scRival && Math.random() < 0.4, weavePhase: rand(0, 6.28), passed: false, frame: rand(0, 8),
           defend: !fromBehind && !teammate && Math.random() < RIVAL_AI.defendChance, brake: 0,
         });
@@ -692,6 +702,9 @@ export class World {
           if (hz.y + hz.r > this.trackBottom) { hz.y = this.trackBottom - hz.r; hz.vy = -Math.abs(hz.vy); }
         }
       } else {
+        // bunched rivals hold safety-car pace until the green flag, then they are slow traffic
+        if (hz.scPace) hz.rel = this.sc.active ? hz.scPace * baseSpeed(this.elapsed) * SAFETY_CAR.speedCap - scrollV : -rand(60, 140);
+        if (hz.scPace && !this.sc.active) hz.scPace = 0;
         hz.x += (hz.rel - scrollV) * dt;
         if (hz.type === 'rival') {
           if (hz.weave) {
@@ -735,6 +748,7 @@ export class World {
 
   onOvertake(hz) {
     const p = this.player;
+    if (this.sc.active && this.sc.grace > 0) return; // the field is still bunching up: no penalty, no credit
     if (this.sc.active) {
       // you do not overtake under the safety car
       this.penalty = SAFETY_CAR.penaltySeconds;
