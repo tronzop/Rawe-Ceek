@@ -33,6 +33,9 @@ services:
   watchtower:
     image: containrrr/watchtower:latest
     container_name: rawe-ceek-watchtower
+    environment:
+      # Watchtower's bundled client defaults to API 1.25; Docker 25+ refuses anything below 1.40
+      - DOCKER_API_VERSION=1.44
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     # only touch containers that opt in with the label above

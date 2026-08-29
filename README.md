@@ -81,12 +81,12 @@ Everything that changes how the game feels — speeds, wear rates, pit timing, r
 
 ## Unraid / auto-updating container
 
-Every push to `main` runs the tests and publishes `ghcr.io/tronzop/rawe-ceek:latest`. On the Unraid box:
+Every push to `main` runs the tests and publishes `ghcr.io/tronzop/rawe-ceek:latest`. On the Unraid box (no Compose plugin needed):
 
 ```sh
-mkdir -p /mnt/user/appdata/rawe-ceek && cd /mnt/user/appdata/rawe-ceek
-curl -fsSLO https://raw.githubusercontent.com/tronzop/Rawe-Ceek/main/deploy/unraid/docker-compose.yaml
-docker compose up -d
+curl -fsSL https://raw.githubusercontent.com/tronzop/Rawe-Ceek/main/deploy/unraid/run.sh | sh
 ```
+
+(If you do have the Compose plugin, `deploy/unraid/docker-compose.yaml` is the same setup.)
 
 That starts the game on port 3732 plus a Watchtower sidecar that checks GHCR every 5 minutes and swaps in new images automatically. Scores persist in `appdata/rawe-ceek/data`; drop meme-pack files into `appdata/rawe-ceek/assets/clips` and `assets/drivers`.
