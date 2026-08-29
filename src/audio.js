@@ -2,12 +2,16 @@
 // the game's intensity, and an engine drone whose pitch follows the speedo.
 // Everything is created lazily on the first user gesture (browser autoplay rules).
 import { STORAGE_KEYS } from './config.js';
+import { OPTIONAL_CLIPS } from './grid.js';
 
+// The four clips that ship with the repo, plus every optional meme clip from
+// grid.js. Missing files are simply never played (see `play` / `playAny`).
 const SFX_FILES = {
   gameover: 'assets/gameover.mp3',
   scream: 'assets/scream.mp3',
   pushing: 'assets/pushinglikeananimal.mp3',
   sonotright: 'assets/sonotright.mp3',
+  ...Object.fromEntries(Object.entries(OPTIONAL_CLIPS).map(([id, c]) => [id, c.file])),
 };
 
 const readPref = (key, fallback) => {
@@ -66,9 +70,21 @@ export class AudioEngine {
 
   get ready() { return !!this.ctx; }
 
+  /**
+   * `available` is a promise for { clips: [...filenames] } from /api/assets.
+   * Optional clips (under assets/clips/) are only fetched when listed; the four
+   * shipped clips are always fetched. Set it before init().
+   */
+  setAvailable(promise) { this.available = promise; }
+
   async loadAll() {
+    const av = await (this.available || Promise.resolve(null)).catch(() => null);
+    const wanted = Object.entries(SFX_FILES).filter(([, url]) => {
+      if (!url.startsWith('assets/clips/')) return true;
+      return av?.clips?.includes(url.slice('assets/clips/'.length));
+    });
     await Promise.all(
-      Object.entries(SFX_FILES).map(async ([name, url]) => {
+      wanted.map(async ([name, url]) => {
         try {
           const res = await fetch(url);
           if (!res.ok) return;
@@ -117,6 +133,14 @@ export class AudioEngine {
     src.start();
     return true;
   }
+
+  /** Plays the first clip in `names` that is loaded. Returns true if any played. */
+  playAny(names, opts) {
+    for (const n of names) if (n && this.buffers[n] && this.play(n, opts)) return true;
+    return false;
+  }
+  /** Which optional clips actually loaded (for the title-screen asset checklist). */
+  loaded(name) { return !!this.buffers[name]; }
 
   // ---------- synthesized SFX ----------
   blip(freq = 880, dur = 0.08, type = 'square', vol = 0.25) {
@@ -363,6 +387,72 @@ export class AudioEngine {
     o.connect(g).connect(this.musicBus);
     o.start(t);
     o.stop(t + 0.12);
+  }
+
+  // ---------- expansion cues ----------
+  /** Two-tone safety car siren. */
+  siren() {
+    for (let i = 0; i < 4; i++) setTimeout(() => this.blip(i % 2 ? 660 : 880, 0.22, 'square', 0.14), i * 240);
+  }
+  /** Descending stewards' beep for a penalty. */
+  penalty() { [880, 660, 440].forEach((f, i) => setTimeout(() => this.blip(f, 0.14, 'sawtooth', 0.16), i * 130)); }
+  /** Chequered-flag fanfare. */
+  fanfare() { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.blip(f, 0.18, 'triangle', 0.22), i * 110)); }
+  /** Thunder: long low-passed noise rumble. */
+  thunder() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(400, t);
+    lp.frequency.exponentialRampToValueAtTime(60, t + 1.8);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.7, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 2.2);
+    src.connect(lp).connect(g).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + 2.3);
+  }
+  /** Short static burst when the pit wall opens the radio. */
+  radioClick() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 3200;
+    bp.Q.value = 3;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+    src.connect(bp).connect(g).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + 0.08);
+  }
+  /** Continuous slipstream whoosh; call every frame with tow 0..1. */
+  updateTow(tow) {
+    if (!this.ctx) return;
+    if (!this.towNode) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1200;
+      bp.Q.value = 0.8;
+      const g = this.ctx.createGain();
+      g.gain.value = 0;
+      src.connect(bp).connect(g).connect(this.sfxBus);
+      src.start();
+      this.towNode = { g, bp };
+    }
+    this.towNode.g.gain.setTargetAtTime(tow * 0.09, this.ctx.currentTime, 0.08);
+    this.towNode.bp.frequency.setTargetAtTime(900 + tow * 900, this.ctx.currentTime, 0.1);
   }
 
   suspend() { if (this.ctx && this.ctx.state === 'running') this.ctx.suspend().catch(() => {}); }

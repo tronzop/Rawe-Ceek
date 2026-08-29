@@ -111,3 +111,42 @@ export function formatTime(seconds) {
   const s = seconds - m * 60;
   return `${m}:${s.toFixed(1).padStart(4, '0')}`;
 }
+
+// ---------------------------------------------------------------------------
+// Expansion helpers (pure, tested)
+// ---------------------------------------------------------------------------
+import { GP, SLIPSTREAM, TYRE_TEMP, VENUES } from './config.js';
+
+/** Index into VENUES for a distance in metres (loops around the calendar). */
+export function venueIndexAt(metres) {
+  return Math.floor(Math.max(0, metres) / GP.lengthMetres) % VENUES.length;
+}
+/** How many GPs have been completed at this distance. */
+export function gpsCompleted(metres) {
+  return Math.floor(Math.max(0, metres) / GP.lengthMetres);
+}
+/** 0..1 progress through the current GP. */
+export function gpProgress(metres) {
+  return (Math.max(0, metres) % GP.lengthMetres) / GP.lengthMetres;
+}
+
+/**
+ * Slipstream strength 0..1 for a rival `dx` px ahead of the player's nose and
+ * `dy` px off the player's centre line. Zero when behind or misaligned.
+ */
+export function towFactor(dx, dy) {
+  if (dx <= 0 || dx > SLIPSTREAM.range) return 0;
+  const lateral = 1 - clamp(Math.abs(dy) / SLIPSTREAM.lateral, 0, 1);
+  const depth = 1 - dx / SLIPSTREAM.range;
+  return clamp(lateral * (0.35 + 0.65 * depth), 0, 1);
+}
+
+/** Grip multiplier from tyre temperature 0..1. */
+export function tempGrip(temp) {
+  return lerp(TYRE_TEMP.coldGrip, 1, clamp(temp, 0, 1));
+}
+
+/** Position label for the HUD from overtakes (starts P20, can't go past P1). */
+export function positionLabel(overtakes) {
+  return `P${Math.max(1, 20 - overtakes)}`;
+}

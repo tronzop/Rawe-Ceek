@@ -19,6 +19,7 @@
         <p class="tagline">Survive the race. Manage the tyres. Trust the strategy. (Don't.)</p>
         <button id="startBtn" class="primary">Lights out — press Enter</button>
         <p id="titleBest" class="best"></p>
+        <p id="careerLine" class="career"></p>
         <div class="controls">
           <div><kbd>▲</kbd><kbd>▼</kbd> steer</div>
           <div><kbd>▶</kbd> push <kbd>◀</kbd> lift</div>
@@ -35,12 +36,24 @@
           <summary>How it works</summary>
           <ul>
             <li>Hit a tyre or another car and it's over. Oil spins you, debris damages the front wing.</li>
-            <li>Tyres wear faster the harder you push. Past ~65% wear grip falls off a cliff; at 100% you puncture.</li>
-            <li>Softs are quick and short-lived, hards are slow and last. Inters and wets only work in the rain.</li>
-            <li>A pit window opens every ~26 s. Steer up into the green gap to box; pick the compound with 1–5 first.</li>
-            <li>Sometimes the wheel gun jams. This is Ferrari.</li>
-            <li>Score = metres travelled + 60 per overtake + 25 per close call.</li>
+            <li>Tyres wear faster the harder you push. Past ~65% wear grip falls off a cliff; at 100% you puncture. Fresh tyres are cold for a few seconds.</li>
+            <li>Softs are quick and short-lived, hards are slow and last. Inters and wets only work in the rain — and at Spa, it rains.</li>
+            <li>A pit window opens every ~26 s. Steer up into the green gap to box; pick the compound with 1–5 first. Sometimes the wheel gun jams. This is Ferrari.</li>
+            <li>Sit directly behind a rival for the <b>tow</b>: extra speed and the battery charges. Some rivals defend.</li>
+            <li><b>Safety car</b>: slow down and do not overtake, or it's a 5 s penalty. The restart pays double for overtakes.</li>
+            <li>Every 1.5 km is a Grand Prix: +150 and 25 championship points, then the calendar moves on. Eight venues, two of them at night.</li>
+            <li>Your team-mate is on track too. Passing him is worth extra. The wall will not be happy.</li>
+            <li>Score = metres travelled + 60 per overtake + 25 per close call + bonuses.</li>
           </ul>
+        </details>
+        <details class="rules">
+          <summary>Trophy cabinet</summary>
+          <div id="trophyList" class="trophies"></div>
+        </details>
+        <details class="rules">
+          <summary>Meme pack <small id="memeSummary"></small></summary>
+          <p>Drop the clips below into <code>assets/clips/</code> and driver portraits into <code>assets/drivers/</code> (see <code>assets/README.md</code>). Everything is optional — missing files fall back to the built-in sounds.</p>
+          <div id="memeList" class="trophies"></div>
         </details>
       </div>
       <aside class="panel board">
@@ -73,6 +86,7 @@
         <h2>Retired</h2>
         <div class="final"><span id="finalScore">0</span><small>points</small></div>
         <div id="finalStats" class="stats"></div>
+        <div id="unlocked" class="unlocked"></div>
         <form id="scoreForm" class="row" autocomplete="off">
           <input id="nameInput" maxlength="16" placeholder="Driver name" aria-label="Driver name" />
           <button id="submitScore" type="submit">Submit</button>

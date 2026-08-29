@@ -2,12 +2,24 @@
 // It knows nothing about the canvas or audio; it reports interesting moments
 // through `emit(event, payload)` so the presentation layer can react.
 import {
-  COMPOUNDS, COMPOUND_ORDER, ERS, PIT, PLAYER, RIVAL_TEAMS, SCORING, SPAWN, SPEED, TYRES, WEATHER, WORLD,
+  COMPOUNDS, COMPOUND_ORDER, ERS, GP, PIT, PLAYER, RIVAL_AI, SAFETY_CAR, SCORING, SCORING_EXTRA, SLIPSTREAM,
+  SPAWN, SPEED, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WEATHER, WORLD,
 } from './config.js';
 import {
-  baseSpeed, clamp, gripFactor, lerp, nextPitWindowIn, pick, pickHazard, pitWindowOpen, rand, rectCircleGap,
-  rectGap, playerSpeed, spawnInterval, wearDelta,
+  baseSpeed, clamp, gpsCompleted, gripFactor, lerp, nextPitWindowIn, pick, pickHazard, pitWindowOpen, rand, rectCircleGap,
+  rectGap, playerSpeed, spawnInterval, tempGrip, towFactor, venueIndexAt, wearDelta,
 } from './logic.js';
+import { EMPTY_RUN } from './career.js';
+import { DRIVERS, LEGEND_BONUS, LEGEND_CHANCE, TEAMS, teamOf } from './grid.js';
+
+const MODERN = DRIVERS.filter((d) => !d.legend && d.team !== 'ferrari');
+const LEGENDS = DRIVERS.filter((d) => d.legend);
+const FERRARI = DRIVERS.filter((d) => d.team === 'ferrari');
+/** Picks a rival driver: your team-mate, a legend, or somebody from the current grid. */
+export function pickDriver(teammate) {
+  if (teammate) return pick(FERRARI);
+  return pick(Math.random() < LEGEND_CHANCE ? LEGENDS : MODERN);
+}
 
 let nextId = 1;
 
@@ -49,13 +61,15 @@ export class World {
     this.milestone = 0;
     this.hazards = [];
     this.particles = [];
+    this.popups = [];
     this.spawnTimer = 1.2;
     this.drsTimer = rand(SPAWN.drsEvery.min, SPAWN.drsEvery.max);
     this.rain = 0; // 0..1 track wetness
     this.raining = false;
     this.rainTimer = 0;
     this.dryTimer = WEATHER.firstRainAfter;
-    this.tyre = { compound: 'medium', wear: 0, punctured: false };
+    this.flash = 0; // lightning
+    this.tyre = { compound: 'medium', wear: 0, punctured: false, temp: 1 };
     this.nextCompound = 'medium';
     this.ers = { charge: ERS.max, boosting: false };
     this.pit = { open: false, wasOpen: false, inLane: false, phase: 'none', timer: 0, stopFor: 0, slow: false, stops: 0 };
@@ -71,13 +85,29 @@ export class World {
       damage: 0, // debris hits reduce max throttle a little
       alive: true,
     };
+    // calendar
+    this.venueIndex = 0;
+    this.venuePrev = 0;
+    this.venueBlend = 1; // 0..1 morph from venuePrev to venueIndex
+    this.night = VENUES[0].night ? 1 : 0;
+    this.gps = 0;
+    // safety car
+    this.sc = { active: false, phase: 'none', timer: 0, cooldown: SAFETY_CAR.firstAfter, restartTimer: 0, clean: true, car: null };
+    this.penalty = 0;
+    // slipstream
+    this.tow = 0;
+    this.towRival = null;
+    this.towAnnounced = false;
     this.lastRadio = 0;
     this.radioLog = [];
     this.stats = { maxSpeed: 0 };
+    this.run = EMPTY_RUN();
   }
 
   // ----- public read helpers -----
-  get grip() { return gripFactor(this.tyre.compound, this.tyre.wear, this.rain); }
+  get venue() { return VENUES[this.venueIndex]; }
+  get prevVenue() { return VENUES[this.venuePrev]; }
+  get grip() { return gripFactor(this.tyre.compound, this.tyre.wear, this.rain) * tempGrip(this.tyre.temp); }
   get kmh() { return Math.round(this.speed * SPEED.kmhPerPx); }
   get intensity() { return clamp((this.speed - SPEED.base) / (SPEED.max - SPEED.base), 0, 1); }
   get playerRect() {
@@ -102,6 +132,10 @@ export class World {
     this.setNextCompound(COMPOUND_ORDER[(i + 1) % COMPOUND_ORDER.length]);
   }
 
+  addPopup(x, y, text, color = '#ffd400') {
+    this.popups.push({ x, y, text, color, age: 0, life: 1.1 });
+  }
+
   // ----- main step -----
   update(dt, input) {
     if (this.gameOver) {
@@ -111,16 +145,29 @@ export class World {
     }
     this.elapsed += dt;
     this.updateWeather(dt);
+    this.updateVenue(dt);
+    this.updateSafetyCar(dt);
     this.updatePit(dt, input);
     this.updatePlayer(dt, input);
     this.updateSpawns(dt);
     this.updateHazards(dt);
     this.updateParticles(dt);
     this.scroll += this.speed * dt;
-    this.distance += this.speed * dt * WORLD.metresPerPx;
+    // no distance credit while serving a penalty: the stewards add it to your time
+    if (this.penalty <= 0) this.distance += this.speed * dt * WORLD.metresPerPx;
     this.score = Math.floor(this.distance) + this.bonus;
     this.stats.maxSpeed = Math.max(this.stats.maxSpeed, this.speed);
     this.shake = Math.max(0, this.shake - dt * 3);
+    this.flash = Math.max(0, this.flash - dt * 2.5);
+
+    // run stats
+    const r = this.run;
+    r.metres = this.distance;
+    r.score = this.score;
+    r.overtakes = this.overtakes;
+    r.stops = this.pit.stops;
+    if (this.raining) r.rainTime += dt;
+    if (this.night > 0.5) r.nightTime += dt;
 
     const ms = Math.floor(this.distance / SCORING.milestoneMetres);
     if (ms > this.milestone) {
@@ -130,23 +177,118 @@ export class World {
   }
 
   updateWeather(dt) {
+    const bias = this.venue.rainBias;
     if (this.raining) {
       this.rainTimer -= dt;
       this.rain = Math.min(1, this.rain + dt / WEATHER.transition);
-      if (this.rainTimer <= 0) {
+      if (this.rainTimer <= 0 || bias === 0) {
         this.raining = false;
         this.dryTimer = WEATHER.dryGap;
         this.emit('rainStop');
       }
+      // storms: lightning once the track is properly wet
+      if (this.rain > STORM.minRain && Math.random() < STORM.chancePerSecond * dt) {
+        this.flash = 1;
+        this.emit('thunder');
+      }
     } else {
       this.rain = Math.max(0, this.rain - dt / WEATHER.transition);
       this.dryTimer -= dt;
-      if (this.dryTimer <= 0 && Math.random() < WEATHER.rainChancePerSecond * dt) {
+      if (this.dryTimer <= 0 && Math.random() < WEATHER.rainChancePerSecond * bias * dt) {
         this.raining = true;
         this.rainTimer = rand(WEATHER.rainDuration.min, WEATHER.rainDuration.max);
         this.emit('rainStart');
       }
     }
+  }
+
+  // ----- calendar -----
+  updateVenue(dt) {
+    const idx = venueIndexAt(this.distance);
+    const done = gpsCompleted(this.distance);
+    if (done > this.gps) {
+      this.gps = done;
+      this.run.gps = done;
+      this.bonus += GP.finishBonus;
+      this.addPopup(this.player.x, this.player.y - 50, `+${GP.finishBonus} CHEQUERED`, '#fff');
+      this.emit('chequered', { gp: done, bonus: GP.finishBonus, venue: this.venue.name });
+    }
+    if (idx !== this.venueIndex) {
+      this.venuePrev = this.venueIndex;
+      this.venueIndex = idx;
+      this.venueBlend = 0;
+      this.emit('venue', { venue: this.venue, index: idx });
+      if (this.venue.night && !this.prevVenue.night) this.emit('night');
+    }
+    this.venueBlend = Math.min(1, this.venueBlend + dt / GP.transition);
+    const targetNight = this.venue.night ? 1 : 0;
+    this.night += (targetNight - this.night) * Math.min(1, dt / GP.transition * 1.5);
+  }
+
+  // ----- safety car -----
+  updateSafetyCar(dt) {
+    const sc = this.sc;
+    if (this.penalty > 0) this.penalty = Math.max(0, this.penalty - dt);
+    if (sc.restartTimer > 0) sc.restartTimer = Math.max(0, sc.restartTimer - dt);
+
+    if (!sc.active) {
+      sc.cooldown -= dt;
+      if (sc.cooldown <= 0 && !this.pit.inLane && Math.random() < SAFETY_CAR.chancePerSecond * dt) this.deploySafetyCar();
+      return;
+    }
+    sc.timer -= dt;
+    const car = sc.car;
+    // the safety car sweeps in from the right and settles ahead of the player
+    if (sc.phase === 'deployed') {
+      const targetX = this.player.x + 340;
+      car.x += (targetX - car.x) * Math.min(1, dt * 2.2);
+      car.y += ((this.trackTop + this.trackBottom) / 2 - car.y) * Math.min(1, dt * 2);
+      car.frame = (car.frame + this.speed * dt * 0.02) % 8;
+      if (sc.timer <= 3) {
+        sc.phase = 'ending';
+        this.emit('scEnding');
+      }
+    } else if (sc.phase === 'ending') {
+      // peels off into the pit lane
+      car.y += (this.pitY - car.y) * Math.min(1, dt * 2.5);
+      car.x += 160 * dt;
+      car.frame = (car.frame + this.speed * dt * 0.02) % 8;
+      if (sc.timer <= 0) this.endSafetyCar();
+    }
+  }
+  deploySafetyCar() {
+    const sc = this.sc;
+    sc.active = true;
+    sc.phase = 'deployed';
+    sc.timer = rand(SAFETY_CAR.duration.min, SAFETY_CAR.duration.max);
+    sc.clean = true;
+    sc.car = { x: this.width + 200, y: (this.trackTop + this.trackBottom) / 2, frame: 0 };
+    this.ers.boosting = false;
+    this.run.scPeriods += 1;
+    // the reason for the yellow: a stranded car on the far side of the track
+    const w = PLAYER.width * 0.92;
+    const h = PLAYER.height * 0.92;
+    const y = Math.random() < 0.5 ? this.trackTop + h : this.trackBottom - h;
+    const driver = pickDriver(false);
+    this.hazards.push({
+      id: nextId++, type: 'stranded', x: this.width + 700, y, w, h, rel: 0, vy: 0, team: teamOf(driver), driver, angle: rand(-0.5, 0.5),
+      frame: 0, smoke: 0,
+    });
+    this.emit('scDeployed');
+  }
+  endSafetyCar() {
+    const sc = this.sc;
+    sc.active = false;
+    sc.phase = 'none';
+    sc.car = null;
+    sc.cooldown = SAFETY_CAR.minGap;
+    sc.restartTimer = SAFETY_CAR.restartWindow;
+    if (sc.clean) {
+      this.run.scClean += 1;
+      this.bonus += SAFETY_CAR.restartBonus;
+      this.addPopup(this.player.x, this.player.y - 50, `+${SAFETY_CAR.restartBonus} CLEAN`, '#2ecc71');
+    }
+    this.emit('scRestart', { clean: sc.clean });
   }
 
   updatePit(dt, input) {
@@ -179,12 +321,13 @@ export class World {
           pit.slow = Math.random() < PIT.slowStopChance;
           pit.stopFor = rand(PIT.stopTime.min, PIT.stopTime.max) + (pit.slow ? rand(PIT.slowStopExtra.min, PIT.slowStopExtra.max) : 0);
           pit.timer = pit.stopFor;
+          if (pit.slow) this.run.slowStops += 1;
           this.emit('pitStop', { slow: pit.slow, duration: pit.stopFor });
         }
         break;
       case 'stop':
         if (pit.timer <= 0) {
-          this.tyre = { compound: this.nextCompound, wear: 0, punctured: false };
+          this.tyre = { compound: this.nextCompound, wear: 0, punctured: false, temp: 0 };
           this.player.damage = 0;
           pit.stops += 1;
           pit.phase = 'exit';
@@ -197,6 +340,7 @@ export class World {
           pit.inLane = false;
           pit.phase = 'none';
           p.y = this.trackTop + 30;
+          this.emit('coldTyres');
         }
         break;
       default:
@@ -221,13 +365,35 @@ export class World {
       this.pushTimer += dt;
       if (this.pushTimer > 4) {
         this.pushTimer = -18; // cooldown before it can trigger again
+        this.run.pushes += 1;
         this.emit('pushing');
       }
     } else if (this.pushTimer > 0) this.pushTimer = 0;
     else this.pushTimer = Math.min(0, this.pushTimer + dt);
 
-    // ERS / boost
-    const wantBoost = (input.boost || input.pointerBoost) && !inPit && p.spin <= 0;
+    // slipstream: the closest rival straight ahead gives a tow
+    this.tow = 0;
+    this.towRival = null;
+    if (!inPit) {
+      const nose = p.x + PLAYER.width / 2;
+      for (const hz of this.hazards) {
+        if (hz.type !== 'rival') continue;
+        const t = towFactor(hz.x - hz.w / 2 - nose, hz.y - p.y);
+        if (t > this.tow) { this.tow = t; this.towRival = hz; }
+      }
+      if (this.tow > 0) {
+        const harvest = this.tow * SLIPSTREAM.ersPerSecond * dt;
+        this.ers.charge = Math.min(ERS.max, this.ers.charge + harvest);
+        this.run.towEnergy += harvest;
+        if (!this.towAnnounced && this.tow > 0.6) { this.towAnnounced = true; this.emit('tow'); }
+        if (Math.random() < dt * 30 * this.tow) {
+          this.particles.push({ kind: 'streak', x: nose + rand(0, 40), y: p.y + rand(-22, 22), vx: -this.speed * 1.4, vy: 0, r: rand(20, 60), life: 0.25, age: 0 });
+        }
+      }
+    }
+
+    // ERS / boost (not under the safety car)
+    const wantBoost = (input.boost || input.pointerBoost) && !inPit && p.spin <= 0 && !this.sc.active;
     if (wantBoost && (this.ers.boosting ? this.ers.charge > 0 : this.ers.charge > ERS.minToEngage)) {
       this.ers.boosting = true;
       this.ers.charge = Math.max(0, this.ers.charge - ERS.drainPerSecond * dt);
@@ -246,9 +412,12 @@ export class World {
 
     // speed
     const stopped = inPit && this.pit.phase === 'stop';
-    const target = stopped
+    let target = stopped
       ? 0
       : playerSpeed({ elapsed: this.elapsed, throttle: p.throttle, boosting: this.ers.boosting, grip, inPit, spun: p.spin > 0 });
+    if (!inPit) target *= 1 + this.tow * SLIPSTREAM.speedBonus;
+    if (this.sc.active && !inPit) target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.speedCap);
+    if (this.penalty > 0 && !inPit) target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.penaltyCap);
     const accel = target > this.speed ? 2.5 : 4.5;
     this.speed += (target - this.speed) * Math.min(1, dt * accel);
 
@@ -278,11 +447,18 @@ export class World {
       p.tilt *= 0.9;
     }
 
+    // tyre temperature: fresh rubber warms with speed and steering, rain cools it
+    if (!inPit) {
+      const heat = (0.6 + 0.6 * (this.speed / SPEED.base) + Math.abs(p.vy) / PLAYER.verticalSpeed) / TYRE_TEMP.warmupSeconds;
+      this.tyre.temp = clamp(this.tyre.temp + heat * dt - this.rain * TYRE_TEMP.rainCooling * dt, 0, 1);
+    }
+
     // tyre wear
     if (!inPit && !this.tyre.punctured) {
       this.tyre.wear = Math.min(100, this.tyre.wear + wearDelta(this.tyre.compound, this.speed, dt));
       if (this.tyre.wear >= 100) {
         this.tyre.punctured = true;
+        this.run.punctures += 1;
         this.emit('puncture');
       } else if (this.tyre.wear > TYRES.cliffStart && this.tyre.wear - wearDelta(this.tyre.compound, this.speed, dt) <= TYRES.cliffStart) {
         this.emit('tyresHot');
@@ -308,6 +484,17 @@ export class World {
     if (this.ers.boosting && Math.random() < dt * 40) {
       this.particles.push({ kind: 'flame', x: rearX + 6, y: p.y + rand(-3, 3), vx: -this.speed * 0.8 - 150, vy: rand(-20, 20), r: rand(3, 6), life: 0.18, age: 0 });
     }
+    // titanium skid-block sparks at high speed on a dry track
+    if (!inPit && this.rain < 0.3 && this.speed > SPEED.max * 0.72 && Math.random() < dt * 60 * this.intensity) {
+      this.particles.push({
+        kind: 'spark', x: p.x + rand(-PLAYER.width * 0.35, PLAYER.width * 0.1), y: p.y + PLAYER.height * 0.45,
+        vx: -this.speed * 0.9 - rand(50, 200), vy: rand(-40, 60), r: rand(1, 2.2), life: rand(0.15, 0.4), age: 0,
+      });
+    }
+    // cold tyre / wet weather wheelspin smoke
+    if (!inPit && this.tyre.temp < 0.5 && this.rain < 0.3 && Math.random() < dt * 20) {
+      this.particles.push({ kind: 'smoke', x: p.x - PLAYER.width * 0.3, y: p.y + PLAYER.height * 0.35, vx: -this.speed * 0.6, vy: rand(-40, -10), r: rand(4, 8), life: 0.5, age: 0 });
+    }
   }
 
   // ----- hazards -----
@@ -315,13 +502,19 @@ export class World {
     if (this.pit.inLane) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
-      this.spawnTimer = spawnInterval(this.elapsed) * rand(0.75, 1.25);
-      this.spawnHazard(pickHazard(this.elapsed));
+      if (this.sc.active) {
+        // bunched field: slow rivals you are not allowed to pass
+        this.spawnTimer = spawnInterval(this.elapsed) * rand(1.6, 2.4);
+        if (this.sc.phase === 'deployed') this.spawnHazard('rival', { scRival: true });
+      } else {
+        this.spawnTimer = spawnInterval(this.elapsed) * rand(0.75, 1.25);
+        this.spawnHazard(pickHazard(this.elapsed));
+      }
     }
     this.drsTimer -= dt;
     if (this.drsTimer <= 0) {
       this.drsTimer = rand(SPAWN.drsEvery.min, SPAWN.drsEvery.max);
-      this.spawnDrs();
+      if (!this.sc.active) this.spawnDrs();
     }
   }
 
@@ -329,7 +522,7 @@ export class World {
     return rand(this.trackTop + margin, this.trackBottom - margin);
   }
 
-  spawnHazard(type) {
+  spawnHazard(type, opts = {}) {
     const right = this.width + 80;
     const t = this.elapsed;
     switch (type) {
@@ -345,15 +538,19 @@ export class World {
         break;
       }
       case 'rival': {
-        const team = pick(RIVAL_TEAMS);
+        const teammate = Math.random() < TEAMMATE.chance && t > 15;
+        const driver = pickDriver(teammate);
+        const team = teamOf(driver);
         const w = PLAYER.width * 0.92;
         const h = PLAYER.height * 0.92;
         // slower rivals come from ahead; occasionally a faster one attacks from behind
-        const fromBehind = Math.random() < 0.25 && t > 20;
-        const rel = fromBehind ? rand(180, 320) : -rand(120, 260) - Math.min(200, t * 1.5);
+        const fromBehind = !opts.scRival && Math.random() < 0.25 && t > 20;
+        let rel = fromBehind ? rand(180, 320) : -rand(120, 260) - Math.min(200, t * 1.5);
+        if (opts.scRival) rel = -rand(20, 70); // just a little slower than you: tempting
         this.hazards.push({
           id: nextId++, type, x: fromBehind ? -w - 40 : right + w, y: this.laneY(h), w, h, rel, vy: 0,
-          team, fromBehind, weave: Math.random() < 0.4, weavePhase: rand(0, 6.28), passed: false, frame: rand(0, 8),
+          team, driver, fromBehind, weave: !opts.scRival && Math.random() < 0.4, weavePhase: rand(0, 6.28), passed: false, frame: rand(0, 8),
+          defend: !fromBehind && !teammate && Math.random() < RIVAL_AI.defendChance, brake: 0,
         });
         break;
       }
@@ -398,15 +595,26 @@ export class World {
           if (hz.weave) {
             hz.weavePhase += dt * 1.6;
             hz.y += Math.sin(hz.weavePhase) * 70 * dt;
-            hz.y = clamp(hz.y, this.trackTop + hz.h / 2, this.trackBottom - hz.h / 2);
           }
+          // defenders drift across to cover your lane when you close in
+          if (hz.defend && hz.x > p.x && hz.x - p.x < RIVAL_AI.defendRange) {
+            const dy = p.y - hz.y;
+            hz.y += clamp(dy, -RIVAL_AI.defendSpeed * dt, RIVAL_AI.defendSpeed * dt);
+            hz.brake = 1;
+          } else hz.brake = Math.max(0, hz.brake - dt * 3);
+          hz.y = clamp(hz.y, this.trackTop + hz.h / 2, this.trackBottom - hz.h / 2);
           hz.frame = (hz.frame + (scrollV - hz.rel) * dt * 0.02) % 8;
+        } else if (hz.type === 'stranded') {
+          hz.smoke += dt;
+          if (Math.random() < dt * 12) {
+            this.particles.push({ kind: 'smoke', x: hz.x - hz.w * 0.3, y: hz.y - 6, vx: -scrollV * 0.9, vy: rand(-60, -20), r: rand(5, 10), life: rand(0.6, 1.2), age: 0 });
+          }
         }
       }
 
       // cull
       const margin = 260;
-      if (hz.x < -margin || hz.x > this.width + margin + 200) continue;
+      if (hz.x < -margin || hz.x > this.width + margin + 600) continue;
 
       // interactions
       if (!this.pit.inLane) this.collide(hz, prect, p);
@@ -415,13 +623,36 @@ export class World {
       // overtake bookkeeping: rival fully behind the player
       if (hz.type === 'rival' && !hz.passed && !hz.fromBehind && hz.x + hz.w / 2 < prect.x) {
         hz.passed = true;
-        this.overtakes += 1;
-        this.bonus += SCORING.overtake;
-        this.emit('overtake', { count: this.overtakes, team: hz.team.name });
+        this.onOvertake(hz);
       }
       survivors.push(hz);
     }
     this.hazards = survivors;
+  }
+
+  onOvertake(hz) {
+    const p = this.player;
+    if (this.sc.active) {
+      // you do not overtake under the safety car
+      this.penalty = SAFETY_CAR.penaltySeconds;
+      this.sc.clean = false;
+      this.run.penalties += 1;
+      this.shake = 0.3;
+      this.addPopup(p.x, p.y - 50, '5s PENALTY', '#ff3b3b');
+      this.emit('penalty');
+      return;
+    }
+    this.overtakes += 1;
+    let pts = SCORING.overtake;
+    let label = `+${pts}`;
+    let color = '#ffd400';
+    if (this.sc.restartTimer > 0) { pts *= SCORING_EXTRA.restartMultiplier; label = `+${pts} RESTART`; color = '#2ecc71'; }
+    if (hz.team.teammate) { pts += TEAMMATE.bonus; label = `+${pts} MULTI 21`; color = '#e10600'; this.run.teammatePasses += 1; }
+    if (hz.driver?.legend) { pts += LEGEND_BONUS; label = `+${pts} LEGEND`; color = '#d4af37'; this.run.legendPasses = (this.run.legendPasses || 0) + 1; }
+    this.bonus += pts;
+    this.addPopup(p.x, p.y - 44, label, color);
+    if (hz.team.teammate) this.emit('teammate', { count: this.run.teammatePasses, driver: hz.driver });
+    else this.emit('overtake', { count: this.overtakes, team: hz.team.name, driver: hz.driver });
   }
 
   collide(hz, prect, p) {
@@ -435,11 +666,14 @@ export class World {
     }
 
     if (gap > 0) {
-      if (gap < SCORING.closeCallDistance && !hz.nearMiss && (hz.type === 'tyre' || hz.type === 'rival')) {
+      if (gap < SCORING.closeCallDistance && !hz.nearMiss && (hz.type === 'tyre' || hz.type === 'rival' || hz.type === 'stranded')) {
         hz.nearMiss = true;
         this.closeCalls += 1;
-        this.bonus += SCORING.closeCall;
-        this.emit('closeCall', { count: this.closeCalls });
+        const teammate = hz.type === 'rival' && hz.team.teammate;
+        const pts = teammate ? SCORING_EXTRA.closeCallTeammate : SCORING.closeCall;
+        this.bonus += pts;
+        this.addPopup(hz.x, hz.y - 30, `+${pts}`, teammate ? '#e10600' : '#7df9ff');
+        this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver });
       }
       return;
     }
@@ -447,6 +681,7 @@ export class World {
     switch (hz.type) {
       case 'tyre':
       case 'rival':
+      case 'stranded':
         this.crash(hz);
         break;
       case 'debris':
@@ -471,6 +706,7 @@ export class World {
           hz.dead = true;
           this.ers.charge = Math.min(ERS.max, this.ers.charge + ERS.drsRefill);
           this.bonus += 20;
+          this.addPopup(hz.x, hz.y - 40, '+20 DRS', '#2ecc71');
           this.emit('drs');
         }
         break;
@@ -491,7 +727,11 @@ export class World {
     for (let i = 0; i < 18; i++) {
       this.particles.push({ kind: 'smoke', x: this.player.x + rand(-40, 40), y: this.player.y, vx: rand(-80, 80), vy: rand(-120, -20), r: rand(8, 18), life: rand(0.8, 1.8), age: 0 });
     }
-    this.emit('crash', { with: hz.type, score: this.score });
+    // bits of carbon fibre
+    for (let i = 0; i < 14; i++) {
+      this.particles.push({ kind: 'carbon', x: this.player.x + rand(-30, 30), y: this.player.y, vx: rand(-200, 300), vy: rand(-350, -60), r: rand(3, 7), life: rand(0.8, 1.6), age: 0, spin: rand(0, 6) });
+    }
+    this.emit('crash', { with: hz.type, score: this.score, driver: hz.driver });
   }
 
   updateCrashed(dt) {
@@ -509,6 +749,7 @@ export class World {
       if (hz.type === 'tyre' || hz.type === 'debris') hz.x += (hz.vx - this.speed) * dt;
       else hz.x += (hz.rel - this.speed) * dt;
     }
+    if (this.sc.car) this.sc.car.x -= this.speed * dt * 0.2;
     if (Math.random() < dt * 8 && this.gameOverTime < 2) {
       this.particles.push({ kind: 'smoke', x: p.x, y: p.y, vx: rand(-40, 40), vy: rand(-80, -20), r: rand(6, 14), life: rand(0.8, 1.6), age: 0 });
     }
@@ -527,11 +768,20 @@ export class World {
       if (pt.age >= pt.life) continue;
       pt.x += pt.vx * dt;
       pt.y += pt.vy * dt;
-      if (pt.kind === 'spark') pt.vy += 500 * dt;
+      if (pt.kind === 'spark' || pt.kind === 'carbon') pt.vy += 500 * dt;
+      if (pt.kind === 'carbon') pt.spin += dt * 8;
       if (pt.kind === 'smoke' || pt.kind === 'spray') pt.r += dt * 14;
       alive.push(pt);
     }
     this.particles = alive;
+    const pops = [];
+    for (const pp of this.popups) {
+      pp.age += dt;
+      if (pp.age >= pp.life) continue;
+      pp.y -= 40 * dt;
+      pops.push(pp);
+    }
+    this.popups = pops;
   }
 }
 

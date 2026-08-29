@@ -114,3 +114,112 @@ test('server sanitize clamps and strips names', () => {
   assert.equal(sanitize({}).name, 'anon');
   assert.equal(sanitize({ name: 'a'.repeat(40) }).name.length, 16);
 });
+
+// ---------------------------------------------------------------------------
+// Expansion
+// ---------------------------------------------------------------------------
+import { applyRun, evaluateTrophies, EMPTY_CAREER, EMPTY_RUN, TROPHIES } from '../src/career.js';
+
+test('calendar: venue index loops and GP progress is 0..1', () => {
+  const { venueIndexAt, gpsCompleted, gpProgress } = logic;
+  const { GP, VENUES } = config;
+  assert.equal(venueIndexAt(0), 0);
+  assert.equal(venueIndexAt(GP.lengthMetres - 1), 0);
+  assert.equal(venueIndexAt(GP.lengthMetres), 1);
+  assert.equal(venueIndexAt(GP.lengthMetres * VENUES.length), 0);
+  assert.equal(gpsCompleted(GP.lengthMetres * 2.5), 2);
+  assert.ok(gpProgress(GP.lengthMetres * 0.25) > 0.24 && gpProgress(GP.lengthMetres * 0.25) < 0.26);
+  assert.equal(gpProgress(GP.lengthMetres), 0);
+  for (const v of VENUES) {
+    assert.ok(['trees', 'harbour', 'stands', 'forest', 'wheel', 'city', 'hills', 'desert'].includes(v.skyline), v.id);
+    assert.equal(v.sky.length, 2);
+  }
+});
+
+test('slipstream: strongest close and aligned, zero when behind or offset', () => {
+  const { towFactor } = logic;
+  const { SLIPSTREAM } = config;
+  assert.equal(towFactor(-10, 0), 0);
+  assert.equal(towFactor(SLIPSTREAM.range + 1, 0), 0);
+  assert.equal(towFactor(50, SLIPSTREAM.lateral), 0);
+  assert.ok(towFactor(20, 0) > towFactor(200, 0));
+  assert.ok(towFactor(100, 0) > towFactor(100, SLIPSTREAM.lateral / 2));
+  assert.ok(towFactor(1, 0) <= 1);
+});
+
+test('tyre temperature: cold rubber grips less, full temp is neutral', () => {
+  const { tempGrip } = logic;
+  const { TYRE_TEMP } = config;
+  assert.equal(tempGrip(1), 1);
+  assert.equal(tempGrip(0), TYRE_TEMP.coldGrip);
+  assert.ok(tempGrip(0.5) > TYRE_TEMP.coldGrip && tempGrip(0.5) < 1);
+  assert.equal(tempGrip(7), 1);
+});
+
+test('position label', () => {
+  assert.equal(logic.positionLabel(0), 'P20');
+  assert.equal(logic.positionLabel(19), 'P1');
+  assert.equal(logic.positionLabel(40), 'P1');
+});
+
+test('career: runs fold into totals and unlock trophies exactly once', () => {
+  const { GP } = config;
+  let career = EMPTY_CAREER();
+  const run = { ...EMPTY_RUN(), metres: 3200, gps: 2, overtakes: 4, slowStops: 1, punctures: 1, score: 3500 };
+  career = applyRun(career, run, GP.points);
+  assert.equal(career.races, 1);
+  assert.equal(career.gps, 2);
+  assert.equal(career.points, 2 * GP.points);
+  assert.equal(career.metres, 3200);
+  const unlocked = evaluateTrophies(career, run);
+  assert.ok(unlocked.includes('lightsout'));
+  assert.ok(unlocked.includes('chequered'));
+  assert.ok(unlocked.includes('bono'));
+  assert.ok(!unlocked.includes('triple'));
+  assert.ok(!unlocked.includes('podium'));
+  career.trophies = unlocked;
+  assert.deepEqual(evaluateTrophies(career, run), []);
+  // ids are unique
+  assert.equal(new Set(TROPHIES.map((t) => t.id)).size, TROPHIES.length);
+});
+
+import { DRIVERS, TEAMS, OPTIONAL_CLIPS, teamOf } from '../src/grid.js';
+
+test('grid: drivers reference real teams, unique ids, valid helmets and clips', () => {
+  const ids = new Set();
+  for (const d of DRIVERS) {
+    assert.ok(!ids.has(d.id), `duplicate driver id ${d.id}`);
+    ids.add(d.id);
+    assert.ok(TEAMS[d.team], `${d.id} has unknown team ${d.team}`);
+    assert.equal(teamOf(d), TEAMS[d.team]);
+    assert.equal(d.helmet.length, 2);
+    assert.ok(Number.isInteger(d.number) && d.number > 0 && d.number < 100);
+    assert.ok(d.lines.overtake.length >= 1 && d.lines.close.length >= 1, `${d.id} needs quips`);
+    for (const c of Object.values(d.clip || {})) assert.ok(OPTIONAL_CLIPS[c], `${d.id} references unknown clip ${c}`);
+    if (d.legend) assert.ok(TEAMS[d.team].classic, `legend ${d.id} should drive a classic livery`);
+  }
+  // every classic team has at least one legend driving it, every modern team has two drivers
+  for (const t of Object.values(TEAMS)) {
+    const n = DRIVERS.filter((d) => d.team === t.id).length;
+    if (t.classic) assert.ok(n >= 1, `${t.id} has no driver`);
+    else assert.equal(n, 2, `${t.id} should have two drivers`);
+  }
+  for (const [id, c] of Object.entries(OPTIONAL_CLIPS)) assert.ok(c.file.startsWith('assets/clips/') && c.file.endsWith('.mp3'), id);
+});
+
+test('radio: driver quips and {d} substitution', async () => {
+  const { radioLine } = await import('../src/radio.js');
+  const d = DRIVERS.find((x) => x.id === 'alonso');
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) seen.add(radioLine('overtake', { driver: d }));
+  assert.ok([...seen].some((l) => d.lines.overtake.includes(l)), 'driver quip should appear');
+  assert.ok(![...seen].some((l) => l.includes('{d}')), 'placeholder must be substituted');
+});
+
+test('server: /api/assets lists only media files and tolerates missing dirs', async () => {
+  const { listAssets } = await import('../server/index.js');
+  const a = listAssets();
+  assert.ok(Array.isArray(a.clips) && Array.isArray(a.drivers));
+  for (const f of a.clips) assert.match(f, /\.(mp3|ogg|wav|m4a)$/);
+  for (const f of a.drivers) assert.match(f, /\.(png|jpe?g|webp|gif)$/);
+});

@@ -5,10 +5,10 @@ export const WORLD = {
   // Logical design height. The renderer scales the world so this many px fit vertically.
   height: 720,
   // Track geometry as fractions of the logical height.
-  pitLaneTop: 0.14,
-  pitLaneBottom: 0.24,
-  trackTop: 0.27,
-  trackBottom: 0.86,
+  pitLaneTop: 0.19,
+  pitLaneBottom: 0.28,
+  trackTop: 0.31,
+  trackBottom: 0.87,
   // Where the player car sits horizontally (fraction of width).
   playerX: 0.22,
   // 1 logical px == this many metres for the odometer.
@@ -116,3 +116,83 @@ export const STORAGE_KEYS = {
   music: 'rawe-ceek:music',
   sfx: 'rawe-ceek:sfx',
 };
+
+// ---------------------------------------------------------------------------
+// Expansion: Grand Prix calendar, safety car, slipstream, tyre temperature,
+// team orders, weather drama and the career/trophy layer.
+// ---------------------------------------------------------------------------
+
+/**
+ * The calendar. Each Grand Prix is GP.lengthMetres long; when you cross the
+ * line you bank points and the scenery morphs into the next venue.
+ * `skyline` picks a backdrop painter in render.js; `night` venues switch on
+ * headlights and floodlights; `rainBias` scales the chance of rain.
+ */
+export const VENUES = [
+  { id: 'monza', name: 'Monza', flag: '🇮🇹', skyline: 'trees', night: false, rainBias: 1.0, sky: ['#6fb6ff', '#dcefff'], horizon: '#9fd08a', ground: '#2f7d32', barrier: '#9aa0ad' },
+  { id: 'monaco', name: 'Monaco', flag: '🇲🇨', skyline: 'harbour', night: false, rainBias: 0.5, sky: ['#5aa9ff', '#cfe7ff'], horizon: '#7db7e8', ground: '#5c6470', barrier: '#c7ccd6' },
+  { id: 'silverstone', name: 'Silverstone', flag: '🇬🇧', skyline: 'stands', night: false, rainBias: 1.7, sky: ['#8aa2b8', '#d9e1ea'], horizon: '#b6c2ce', ground: '#3f8a3c', barrier: '#9aa0ad' },
+  { id: 'spa', name: 'Spa-Francorchamps', flag: '🇧🇪', skyline: 'forest', night: false, rainBias: 2.4, sky: ['#6f8fae', '#cfdbe6'], horizon: '#4f7a4a', ground: '#2c6b2f', barrier: '#8e949f' },
+  { id: 'suzuka', name: 'Suzuka', flag: '🇯🇵', skyline: 'wheel', night: false, rainBias: 1.3, sky: ['#7cc0ff', '#e6f2ff'], horizon: '#93c58f', ground: '#357f39', barrier: '#9aa0ad' },
+  { id: 'singapore', name: 'Singapore', flag: '🇸🇬', skyline: 'city', night: true, rainBias: 1.5, sky: ['#0b1030', '#3a2757'], horizon: '#1b2148', ground: '#33383f', barrier: '#5f6672' },
+  { id: 'interlagos', name: 'Interlagos', flag: '🇧🇷', skyline: 'hills', night: false, rainBias: 2.0, sky: ['#5f9fe0', '#d3e6f8'], horizon: '#6ea56a', ground: '#2f7d32', barrier: '#9aa0ad' },
+  { id: 'bahrain', name: 'Bahrain', flag: '🇧🇭', skyline: 'desert', night: true, rainBias: 0.0, sky: ['#0a0d22', '#3b2a3f'], horizon: '#2a2238', ground: '#8f7c55', barrier: '#5f6672' },
+];
+
+export const GP = {
+  lengthMetres: 1500,
+  finishBonus: 150,
+  points: 25, // championship points banked per completed GP
+  transition: 3, // seconds to morph the scenery between venues
+};
+
+export const SAFETY_CAR = {
+  firstAfter: 40, // seconds before the first one can be deployed
+  chancePerSecond: 0.012,
+  minGap: 45, // seconds between periods
+  duration: { min: 9, max: 14 },
+  speedCap: 0.62, // fraction of base speed while deployed
+  penaltySeconds: 5,
+  penaltyCap: 0.5, // speed cap while serving a penalty
+  restartWindow: 4, // seconds after the restart where overtakes pay double
+  restartBonus: 50,
+};
+
+export const SLIPSTREAM = {
+  range: 280, // px behind a rival where the tow starts
+  lateral: 30, // vertical alignment tolerance
+  speedBonus: 0.12, // max speed multiplier gain at full tow
+  ersPerSecond: 16, // extra ERS harvest at full tow
+};
+
+export const TYRE_TEMP = {
+  warmupSeconds: 4.5, // time for fresh tyres to come up to temperature
+  coldGrip: 0.78, // grip multiplier when stone cold
+  rainCooling: 0.04, // per second temp loss while it rains
+};
+
+export const TEAMMATE = {
+  chance: 0.14, // share of rivals that are your team-mate
+  bonus: 100, // extra for passing him (the wall will not be happy)
+  team: { name: 'Ferrari', primary: '#e10600', accent: '#ffd400', teammate: true },
+};
+
+export const RIVAL_AI = {
+  defendChance: 0.35, // rivals that move to cover your lane
+  defendRange: 340,
+  defendSpeed: 70, // px/s lateral
+};
+
+export const STORM = {
+  minRain: 0.75, // wetness before lightning can strike
+  chancePerSecond: 0.09,
+};
+
+export const SCORING_EXTRA = {
+  closeCallTeammate: 40,
+  restartMultiplier: 2,
+};
+
+export const SAFETY_CAR_TEAM = { name: 'Safety Car', primary: '#c9ccd2', accent: '#ff9d00' };
+
+Object.assign(STORAGE_KEYS, { career: 'rawe-ceek:career' });

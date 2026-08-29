@@ -1,6 +1,7 @@
 // Single zero-dependency server: serves the static game and the leaderboard API.
 //   GET  /api/leaderboard          -> top 25 as JSON
 //   POST /api/leaderboard {name,score,...} -> { ok: true }
+//   GET  /api/assets              -> { clips: [...], drivers: [...] } present in assets/
 //   GET  /healthz
 import http from 'node:http';
 import fs from 'node:fs';
@@ -75,7 +76,9 @@ function serveStatic(req, res) {
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Content-Length': st.size,
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+      // code revalidates on every load (no stale game after a deploy); media may be cached
+      'Cache-Control': ['.html', '.js', '.css'].includes(ext) ? 'no-cache' : 'public, max-age=3600',
+      'Last-Modified': st.mtime.toUTCString(),
     });
     fs.createReadStream(file).pipe(res);
   });
@@ -84,6 +87,8 @@ function serveStatic(req, res) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/healthz') return json(res, 200, { ok: true });
+  // Which optional meme-pack files are present, so the client never probes for missing ones.
+  if (url.pathname === '/api/assets') return json(res, 200, listAssets());
 
   if (url.pathname === '/api/leaderboard' || url.pathname === '/leaderboard') {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -124,6 +129,16 @@ const server = http.createServer((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
   serveStatic(req, res);
 });
+
+/** Filenames present in assets/clips and assets/drivers (audio / image types only). */
+export function listAssets() {
+  const list = (dir, exts) => {
+    try {
+      return fs.readdirSync(path.join(ROOT, 'assets', dir)).filter((f) => exts.includes(path.extname(f).toLowerCase())).sort();
+    } catch { return []; }
+  };
+  return { clips: list('clips', ['.mp3', '.ogg', '.wav', '.m4a']), drivers: list('drivers', ['.png', '.jpg', '.jpeg', '.webp', '.gif']) };
+}
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {

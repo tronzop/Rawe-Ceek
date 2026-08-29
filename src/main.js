@@ -1,11 +1,13 @@
 // Bootstrap: wires input, world, renderer, audio and the DOM screens together.
-import { COMPOUNDS, COMPOUND_ORDER, SPEED, WORLD } from './config.js';
+import { COMPOUNDS, COMPOUND_ORDER, GP, SPEED, VENUES, WORLD } from './config.js';
 import { Input } from './input.js';
 import { World } from './world.js';
 import { Renderer } from './render.js';
 import { AudioEngine } from './audio.js';
 import { radioLine } from './radio.js';
 import { Leaderboard } from './leaderboard.js';
+import { Career, TROPHIES } from './career.js';
+import { DRIVERS, OPTIONAL_CLIPS } from './grid.js';
 import { clamp, formatDistance, lerp } from './logic.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -17,8 +19,13 @@ assets.sheet.src = 'assets/ferrari_sheet.png';
 
 const input = new Input(canvas);
 const audio = new AudioEngine();
+// Which optional meme-pack files exist (empty when opened from disk / no server).
+const assetsAvailable = fetch('/api/assets', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+  .then((a) => a && Array.isArray(a.clips) ? a : { clips: [], drivers: [] });
+audio.setAvailable(assetsAvailable);
 const renderer = new Renderer(canvas, assets);
-const hud = { radio: null, toast: null, best: Leaderboard.best(), musicOn: audio.musicOn };
+let career = Career.load();
+const hud = { radio: null, toast: null, best: Leaderboard.best(), musicOn: audio.musicOn, points: career.points };
 
 let state = 'title'; // title | playing | paused | over
 let world = new World(onWorldEvent);
@@ -50,6 +57,7 @@ function startGame() {
   audio.resume();
   audio.startMusic();
   radio('start');
+  audio.play('lightsout', { volume: 1 });
   $('#gameOverScreen').classList.remove('revealed');
 }
 function pause() {
@@ -65,22 +73,40 @@ function resume() {
   last = performance.now();
   audio.resume();
 }
-function gameOver() {
+function gameOver(payload = {}) {
   state = 'over';
   audio.stopMusic();
   audio.crashNoise();
-  setTimeout(() => audio.play('gameover', { volume: 1 }), 250);
+  setTimeout(() => audio.playAny([Math.random() < 0.5 ? 'nomichaelno' : null, 'gameover'], { volume: 1 }), 250);
+  // portrait: the driver you hit if we have their picture, else sad Greg
+  const img = $('#sadGreg');
+  assetsAvailable.then((a) => {
+    const id = payload.driver ? payload.driver.id : 'you';
+    const file = a.drivers.find((f) => f.replace(/\.[^.]+$/, '') === id);
+    img.src = file ? `assets/drivers/${file}` : 'assets/sadgreg.png';
+    img.alt = file && payload.driver ? `${payload.driver.name} after you drove into them` : 'A very sad Ferrari driver sitting in the grass';
+  });
   hud.best = Leaderboard.recordBest(world.score);
+  // career + trophies
+  const result = Career.record(world.run, GP.points);
+  career = result.career;
+  hud.points = career.points;
+  renderCareer();
   // fill the panel
   $('#finalScore').textContent = String(world.score);
   $('#finalStats').innerHTML = [
     ['Distance', formatDistance(world.distance)],
+    ['Grands Prix', `${world.gps} (+${world.gps * GP.points} pts)`],
     ['Overtakes', world.overtakes],
     ['Close calls', world.closeCalls],
     ['Pit stops', world.pit.stops],
+    ['Penalties', world.run.penalties],
     ['Top speed', `${Math.round(world.stats.maxSpeed * SPEED.kmhPerPx)} km/h`],
     ['Best', hud.best],
   ].map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('');
+  $('#unlocked').innerHTML = result.unlocked.length
+    ? `<p class="kicker">Trophies unlocked</p>${result.unlocked.map((t) => `<div class="trophy new"><b>🏆 ${t.name}</b><span>${t.desc}</span></div>`).join('')}`
+    : '';
   $('#nameInput').value = Leaderboard.playerName();
   $('#submitStatus').textContent = '';
   $('#submitScore').disabled = false;
@@ -96,41 +122,58 @@ function gameOver() {
 // ---------- world events → presentation ----------
 function radio(kind, ctx) {
   const text = radioLine(kind, ctx);
-  if (text) hud.radio = { text, age: 0 };
+  if (text) { hud.radio = { text, age: 0 }; audio.radioClick(); }
 }
-function toast(text, color) {
-  hud.toast = { text, color, age: 0 };
+function toast(text, color, sub) {
+  hud.toast = { text, color, sub, age: 0 };
 }
 function onWorldEvent(evt, payload = {}) {
   switch (evt) {
     case 'radio': radio(payload.kind, payload.ctx); break;
-    case 'crash': radio('crash'); gameOver(); break;
+    case 'crash': radio('crash', { driver: payload.driver }); gameOver(payload); break;
     case 'closeCall':
-      audio.play('scream', { volume: 0.7, minGap: 2.5 }) || audio.skid(0.25);
-      if (payload.count % 3 === 0) radio('closeCall');
+      audio.playAny([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 }) || audio.skid(0.25);
+      if (payload.count % 3 === 0 || payload.driver?.legend) radio('closeCall', { driver: payload.driver });
       break;
-    case 'overtake': audio.overtake(); if (payload.count % 4 === 1) radio('overtake'); break;
-    case 'oil': audio.play('sonotright', { volume: 0.9, minGap: 3 }); audio.skid(0.4); radio('oil'); break;
+    case 'overtake':
+      audio.overtake();
+      if (payload.driver?.clip?.overtake && audio.play(payload.driver.clip.overtake, { volume: 0.9, minGap: 6 })) radio('overtake', { driver: payload.driver });
+      else if (payload.count % 4 === 1 || payload.driver?.legend) radio('overtake', { driver: payload.driver });
+      break;
+    case 'oil': audio.playAny(['iamstupid', 'sonotright'], { volume: 0.9, minGap: 3 }); audio.skid(0.4); radio('oil'); break;
     case 'debris': audio.skid(0.2); radio('debris'); break;
     case 'drs': audio.drs(); toast('DRS', '#2ecc71'); break;
-    case 'pushing': audio.play('pushing', { volume: 1, minGap: 10 }); radio('pushing'); break;
+    case 'pushing': audio.playAny([Math.random() < 0.4 ? 'hammertime' : null, 'pushing'], { volume: 1, minGap: 10 }); radio('pushing'); break;
     case 'milestone':
       toast(`${payload.km} km`, '#ffd400');
       radio('milestone');
       if (payload.km % 2 === 0) audio.play('pushing', { volume: 1, minGap: 10 });
       break;
-    case 'tyresHot': radio('tyresHot'); break;
-    case 'puncture': toast('PUNCTURE', '#ff3b3b'); radio('puncture'); audio.play('sonotright', { volume: 0.9, minGap: 3 }); break;
-    case 'pitOpen': radio('pitOpen'); break;
+    case 'tyresHot': radio('tyresHot'); audio.play('bono', { volume: 0.9, minGap: 20 }); break;
+    case 'puncture': toast('PUNCTURE', '#ff3b3b'); radio('puncture'); audio.playAny(['bono', 'sonotright'], { volume: 0.9, minGap: 3 }); break;
+    case 'pitOpen': radio('pitOpen'); audio.play('boxbox', { volume: 0.8, minGap: 20 }); break;
     case 'pitIn': radio('pitIn'); break;
     case 'pitStop':
       audio.wheelGun(payload.slow ? 9 : 4);
-      if (payload.slow) { radio('pitSlow'); toast('SO NOT RIGHT', '#ff3b3b'); audio.play('sonotright', { volume: 0.9 }); }
+      if (payload.slow) { radio('pitSlow'); toast('SO NOT RIGHT', '#ff3b3b'); audio.playAny(['wearechecking', 'sonotright'], { volume: 0.9 }); }
       break;
     case 'pitOut': radio('pitOut'); toast(`${COMPOUNDS[payload.compound].label} FITTED`, COMPOUNDS[payload.compound].color); break;
-    case 'rainStart': radio('rainStart'); toast('RAIN', '#7fb2ff'); break;
+    case 'rainStart': radio('rainStart'); toast('RAIN', '#7fb2ff'); audio.play('isthatglock', { volume: 0.9, minGap: 30 }); break;
     case 'rainStop': radio('rainStop'); break;
     case 'compound': radio('compound', { compound: COMPOUNDS[payload.compound].label.toLowerCase() + 's' }); break;
+    // --- expansion ---
+    case 'chequered': audio.fanfare(); audio.playAny([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 }); toast('CHEQUERED FLAG', '#fff', `${payload.venue} · +${payload.bonus} · ${GP.points} pts`); radio('chequered'); break;
+    case 'venue': setTimeout(() => { toast(`${payload.venue.flag} ${payload.venue.name.toUpperCase()}`, '#ffd400', `Round ${payload.index + 1} of ${VENUES.length}`); radio('venue', { venue: payload.venue.name }); }, 1800); break;
+    case 'night': setTimeout(() => radio('night'), 4500); break;
+    case 'scDeployed': audio.siren(); audio.playAny(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking'); radio('scDeployed'); break;
+    case 'scEnding': radio('scEnding'); break;
+    case 'scRestart': audio.drs(); audio.play('leavemealone', { volume: 0.9, minGap: 30 }); toast('GREEN FLAG', '#2ecc71', 'overtakes pay double'); radio(payload.clean ? 'scClean' : 'scRestart'); break;
+    case 'penalty': audio.penalty(); audio.play('penalty', { volume: 0.9, minGap: 5 }); toast('5s PENALTY', '#ff3b3b', 'overtaking under safety car'); radio('penalty'); break;
+    case 'teammate': audio.overtake(); audio.playAny(['multi21', payload.driver?.clip?.overtake, 'itsjames'], { volume: 0.9, minGap: 6 }); toast('MULTI 21', '#e10600'); radio('teammate', { driver: payload.driver }); break;
+    case 'teammateClose': audio.playAny([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 }) || audio.skid(0.25); radio('teammateClose', { driver: payload.driver }); break;
+    case 'tow': radio('tow'); break;
+    case 'thunder': audio.play('thunder', { volume: 0.8, minGap: 4 }) || audio.thunder(); if (Math.random() < 0.5) radio('thunder'); break;
+    case 'coldTyres': radio('coldTyres'); break;
     default: break;
   }
 }
@@ -161,6 +204,30 @@ function syncToggles() {
 }
 syncToggles();
 $('#titleBest').textContent = hud.best ? `Personal best: ${hud.best}` : '';
+
+// ---------- career / trophy cabinet ----------
+function renderCareer() {
+  const have = new Set(career.trophies);
+  $('#careerLine').textContent = career.races
+    ? `${career.points} championship pts · ${career.gps} GPs finished · ${(career.metres / 1000).toFixed(1)} km · ${have.size}/${TROPHIES.length} trophies`
+    : 'No races yet. Championship starts now.';
+  $('#trophyList').innerHTML = TROPHIES.map((t) => `<div class="trophy ${have.has(t.id) ? 'won' : 'locked'}"><b>${have.has(t.id) ? '🏆' : '🔒'} ${t.name}</b><span>${t.desc}</span></div>`).join('');
+}
+renderCareer();
+
+// ---------- meme pack checklist (which optional clips / portraits are present) ----------
+async function renderMemePack() {
+  const a = await assetsAvailable;
+  const clips = Object.entries(OPTIONAL_CLIPS).map(([id, c]) => ({ id, ...c, ok: a.clips.includes(c.file.slice('assets/clips/'.length)) }));
+  const stems = new Set(a.drivers.map((f) => f.replace(/\.[^.]+$/, '')));
+  const drivers = DRIVERS.map((d) => ({ ...d, ok: stems.has(d.id) }));
+  const nClips = clips.filter((c) => c.ok).length;
+  const nPics = drivers.filter((d) => d.ok).length;
+  $('#memeSummary').textContent = `${nClips}/${clips.length} clips · ${nPics}/${drivers.length} portraits`;
+  $('#memeList').innerHTML = clips.map((c) => `<div class="trophy ${c.ok ? 'won' : 'locked'}"><b>${c.ok ? '🔊' : '🔇'} ${c.desc}</b><span>${c.file} — ${c.event}</span></div>`).join('')
+    + `<div class="trophy ${nPics ? 'won' : 'locked'}"><b>🖼 Driver portraits</b><span>assets/drivers/&lt;id&gt;.png — shown on the retirement screen when you hit that driver. Present: ${drivers.filter((d) => d.ok).map((d) => d.name).join(', ') || 'none'}</span></div>`;
+}
+renderMemePack();
 
 $('#scoreForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -227,7 +294,8 @@ function frame(now) {
     // audio follows the sim
     const ratio = clamp(world.speed / SPEED.max, 0, 1);
     audio.updateEngine(dt, ratio, state === 'playing' && !world.pit.inLane || (state === 'playing' && world.pit.phase !== 'stop'));
-    audio.setMusicState(lerp(96, 172, world.intensity), clamp(world.intensity * 1.15 + (world.raining ? 0.1 : 0), 0, 1));
+    audio.setMusicState(lerp(96, 172, world.intensity), clamp(world.intensity * 1.15 + (world.raining ? 0.1 : 0) + (world.sc.restartTimer > 0 ? 0.2 : 0) - (world.sc.active ? 0.3 : 0), 0, 1));
+    audio.updateTow(state === 'playing' ? world.tow : 0);
   }
   requestAnimationFrame(frame);
 }

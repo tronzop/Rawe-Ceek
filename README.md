@@ -2,7 +2,7 @@
 
 A Ferrari-fan survival racer in plain HTML5 Canvas + JavaScript. No build step, no runtime dependencies.
 
-You are the red car. The track scrolls under you at ever-increasing speed. Dodge Pirelli tyres, rival cars, oil and debris; manage your tyre wear; box in the pit window when the wall lets you; and trust the strategy. (Don't.)
+You are the red car. The track scrolls under you at ever-increasing speed through an eight-round calendar — Monza to Bahrain, two of them under floodlights. Dodge Pirelli tyres, rival cars, oil and debris; ride the slipstream; manage your tyre wear and temperature; behave behind the safety car; box in the pit window when the wall lets you; and trust the strategy. (Don't.)
 
 ## Play
 
@@ -31,7 +31,15 @@ Or open `index.html` straight from disk — everything works offline except the 
 - **Tyre wear** grows with the square of your speed. Past ~65 % grip falls off a cliff — you turn slower and can't use full throttle. At 100 % you puncture and limp until you pit.
 - **Compounds**: softs are quick and short-lived, hards are slow and last, mediums are mediums. Inters and wets only grip when it **rains**, and it will rain.
 - **Pit window** opens every ~26 s for 7 s. Steer up into the flashing green gap in the pit wall. The stop fits whatever compound you selected. Sometimes the wheel gun jams. This is Ferrari.
-- **Score** = metres travelled + 60 per overtake + 25 per close call. Every kilometre and every sustained push gets a radio message from the pit wall.
+- **Slipstream**: sit directly behind a rival and you get the tow — up to +12 % speed and the battery charges. Some rivals defend by moving across to cover your lane (watch their brake lights).
+- **Safety car**: a car is stranded somewhere ahead, the field bunches up, marshals wave yellows and a speed delta applies. Overtaking under the SC is a **5 s penalty** (you crawl and score nothing while you serve it). Restart clean and you bank +50; overtakes pay double for the next 4 s.
+- **Grand Prix calendar**: every 1.5 km is a race. Cross the line for +150 and 25 championship points, then the scenery morphs into the next venue: Monza, Monaco, Silverstone, Spa, Suzuka, Singapore (night), Interlagos, Bahrain (night). Each venue has its own skyline, palette and rain probability — Spa is soaked, Bahrain never rains.
+- **The grid**: rivals are real drivers — the full 2025 field with team liveries, race numbers and their own helmet colours — plus **legends** in classic liveries (Senna's JPS Lotus, Schumacher's Benetton, Button's Brawn, Mansell's Williams, Räikkönen's Lotus, Alonso's Minardi…). Legends are rarer and worth +40. Each driver has their own pit-wall quips when you pass or nearly hit them (Alonso's GP2 engine, Kimi's *bwoah*, Yuki's *WHAT?!*). Add drivers in `src/grid.js`.
+- **Team-mate**: one rival in seven is the other Ferrari (Leclerc or Hamilton). Passing him is +160 and a *Multi 21* radio message; a close call with him is worth more too.
+- **Meme pack**: drop team-radio clips into `assets/clips/` and driver portraits into `assets/drivers/` and the game wires them to events automatically — crash into Verstappen and his portrait replaces sad Greg. Everything is optional; see `assets/README.md` for the list and the title screen's *Meme pack* panel for what's detected.
+- **Weather**: heavy rain brings lightning and standing water. Fresh tyres out of the pits are cold for a few seconds — weave and take it easy.
+- **Score** = metres travelled + 60 per overtake + 25 per close call + bonuses. Every kilometre and every sustained push gets a radio message from the pit wall.
+- **Career**: championship points, distance and a 16-trophy cabinet persist in this browser (title screen → Trophy cabinet).
 
 ### Sounds
 
@@ -50,6 +58,7 @@ src/
   audio.js          samples, synth soundtrack, engine drone
   input.js          keyboard + pointer
   radio.js          pit-wall lines
+  career.js         persistent career stats + trophy definitions (tested)
   leaderboard.js    localStorage + server API client
   style.css
 server/index.js     zero-dependency static + leaderboard server
@@ -67,4 +76,4 @@ docker compose up -d --build      # game on http://localhost:3732, scores persis
 
 ## Tuning
 
-Everything that changes how the game feels — speeds, wear rates, pit timing, rain frequency, hazard weights — is in `src/config.js`. `npm test` checks the maths in `src/logic.js` still holds after you fiddle.
+Everything that changes how the game feels — speeds, wear rates, pit timing, rain frequency, hazard weights, the venue calendar, safety-car odds, slipstream strength — is in `src/config.js`. `npm test` checks the maths in `src/logic.js` still holds after you fiddle.
