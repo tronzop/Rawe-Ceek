@@ -59,8 +59,8 @@ export class Renderer {
       const s = world.shake * 6;
       ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
     }
-    // boost / tow zoom: a subtle push-in centred on the car
-    const targetZoom = world.ers.boosting ? 1.045 : 1 + world.tow * 0.015;
+    // boost / tow zoom: a subtle push-in centred on the car; the pit-entry cinematic pushes in harder
+    const targetZoom = (world.ers.boosting ? 1.045 : 1 + world.tow * 0.015) + world.cine * 0.08;
     this.zoom += (targetZoom - this.zoom) * Math.min(1, dt * 6);
     if (Math.abs(this.zoom - 1) > 0.001) {
       ctx.translate(world.player.x, world.player.y);
@@ -75,6 +75,7 @@ export class Renderer {
     this.drawParticles(world, ['spray', 'smoke', 'streak']);
     for (const hz of world.hazards) if (hz.type !== 'oil' && hz.type !== 'drs') this.drawHazard(hz, world);
     if (world.sc.car) this.drawSafetyCar(world);
+    if (world.cine > 0.02) this.drawPitApproach(world, W);
     this.drawPlayer(world);
     // stationary car: mechanics at each wheel + the wheel-gun mini-game (drawn late so nothing paints over it)
     if (world.pit.inLane && world.pit.phase === 'stop' && world.pit.game) this.drawPitGame(world);
@@ -85,6 +86,7 @@ export class Renderer {
     this.drawSpeedLines(world, W, H);
     this.drawPopups(world);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    if (world.cine > 0.02) this.drawLetterbox(world, W, H);
     if (world.flash > 0) {
       ctx.fillStyle = `rgba(255,255,255,${0.75 * world.flash})`;
       ctx.fillRect(0, 0, W, H);
@@ -500,6 +502,73 @@ export class Renderer {
     ctx.textBaseline = 'alphabetic';
   }
 
+  /** Pit-entry cinematic on the track: dimmed field, lit path and chevrons up to the gap. */
+  drawPitApproach(world, W) {
+    const { ctx } = this;
+    const a = world.cine;
+    const p = world.player;
+    // dim everything that can no longer hurt you
+    ctx.fillStyle = `rgba(4,6,14,${0.35 * a})`;
+    ctx.fillRect(0, world.trackTop - 12, W, world.trackBottom - world.trackTop + 24);
+    // lit corridor from the car up to the pit gap
+    const gapX = p.x + 60;
+    const g = ctx.createLinearGradient(0, world.trackBottom, 0, world.pitBottom);
+    g.addColorStop(0, 'rgba(46,204,113,0)');
+    g.addColorStop(1, `rgba(46,204,113,${0.28 * a})`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(p.x - 140, world.trackBottom);
+    ctx.lineTo(p.x + 140, world.trackBottom);
+    ctx.lineTo(gapX + 140, world.pitBottom);
+    ctx.lineTo(gapX - 140, world.pitBottom);
+    ctx.closePath();
+    ctx.fill();
+    // chevrons marching up the corridor
+    const n = 5;
+    for (let i = 0; i < n; i++) {
+      const t = ((i / n) + (this.time * 0.9) % 1) % 1;
+      const y = lerp(world.trackBottom - 20, world.trackTop + 10, t);
+      const x = lerp(p.x, gapX, t);
+      ctx.globalAlpha = a * (0.25 + 0.75 * Math.sin(t * Math.PI));
+      ctx.strokeStyle = '#2ecc71';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(x - 18, y + 10); ctx.lineTo(x, y - 4); ctx.lineTo(x + 18, y + 10);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    // ghost outline around the car so the invulnerability reads
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.tilt);
+    ctx.strokeStyle = `rgba(125,249,255,${0.75 * a * (0.6 + 0.4 * Math.sin(this.time * 10))})`;
+    ctx.lineWidth = 3;
+    roundRect(ctx, -PLAYER.width / 2 - 8, -PLAYER.height / 2 - 8, PLAYER.width + 16, PLAYER.height + 16, 14);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Cinematic letterbox + caption while boxing. */
+  drawLetterbox(world, W, H) {
+    const { ctx } = this;
+    const a = world.cine;
+    const bar = 44 * a;
+    ctx.fillStyle = '#04060e';
+    ctx.fillRect(0, 0, W, bar);
+    ctx.fillRect(0, H - bar, W, bar);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#ffd400';
+    ctx.font = `900 ${18 + 6 * a}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('BOX BOX', W / 2, H - bar / 2);
+    ctx.fillStyle = '#c9ced9';
+    ctx.font = `bold 12px ${FONT}`;
+    ctx.fillText(`${COMPOUNDS[world.nextCompound].label} · get ready on the wheel gun`, W / 2, bar / 2);
+    ctx.textBaseline = 'alphabetic';
+    ctx.globalAlpha = 1;
+  }
+
   /** The pit-stop mini-game: mechanics, per-wheel status, sweeping marker, stop clock. */
   drawPitGame(world) {
     const { ctx } = this;
@@ -744,6 +813,7 @@ export class Renderer {
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.tilt + p.angle);
+    if (world.pit.requested) ctx.globalAlpha = 0.72 + 0.2 * Math.sin(this.time * 14); // ghosted on the way in
     // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();

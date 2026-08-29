@@ -2,17 +2,27 @@
 // the game's intensity, and an engine drone whose pitch follows the speedo.
 // Everything is created lazily on the first user gesture (browser autoplay rules).
 import { STORAGE_KEYS } from './config.js';
-import { OPTIONAL_CLIPS } from './grid.js';
+import { OPTIONAL_CLIPS, resolveClip } from './grid.js';
 
-// The four clips that ship with the repo, plus every optional meme clip from
-// grid.js. Missing files are simply never played (see `play` / `playAny`).
+// The four meme clips that ship in assets/. The meme-pack clips (OPTIONAL_CLIPS)
+// are resolved at load time from whatever files exist in assets/clips/.
 const SFX_FILES = {
   gameover: 'assets/gameover.mp3',
   scream: 'assets/scream.mp3',
   pushing: 'assets/pushinglikeananimal.mp3',
   sonotright: 'assets/sonotright.mp3',
-  ...Object.fromEntries(Object.entries(OPTIONAL_CLIPS).map(([id, c]) => [id, c.file])),
 };
+
+/** Soft-clip transfer curve for the radio voice. */
+function makeRadioCurve() {
+  const n = 1024;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.tanh(x * 2.6) / Math.tanh(2.6);
+  }
+  return curve;
+}
 
 const readPref = (key, fallback) => {
   try {
@@ -33,6 +43,7 @@ export class AudioEngine {
     this.musicBus = null;
     this.sfxBus = null;
     this.buffers = {};
+    this.synthetic = {}; // clip name -> true when it is a TTS placeholder (gets the radio filter)
     this.musicOn = readPref(STORAGE_KEYS.music, true);
     this.sfxOn = readPref(STORAGE_KEYS.sfx, true);
     this.lastPlayed = {};
@@ -79,10 +90,12 @@ export class AudioEngine {
 
   async loadAll() {
     const av = await (this.available || Promise.resolve(null)).catch(() => null);
-    const wanted = Object.entries(SFX_FILES).filter(([, url]) => {
-      if (!url.startsWith('assets/clips/')) return true;
-      return av?.clips?.includes(url.slice('assets/clips/'.length));
-    });
+    const wanted = Object.entries(SFX_FILES);
+    for (const id of Object.keys(OPTIONAL_CLIPS)) {
+      // with a server we know exactly which files exist; without one, try the shipped .wav
+      const file = av ? resolveClip(id, av.clips || []) : `${id}.wav`;
+      if (file) wanted.push([id, `assets/clips/${file}`]);
+    }
     await Promise.all(
       wanted.map(async ([name, url]) => {
         try {
@@ -90,6 +103,8 @@ export class AudioEngine {
           if (!res.ok) return;
           const ab = await res.arrayBuffer();
           this.buffers[name] = await this.ctx.decodeAudioData(ab);
+          // the shipped TTS readings are .wav; give them a team-radio voice
+          this.synthetic[name] = url.endsWith('.wav');
         } catch { /* missing asset is fine */ }
       })
     );
@@ -129,8 +144,25 @@ export class AudioEngine {
     src.playbackRate.value = rate;
     const g = this.ctx.createGain();
     g.gain.value = volume;
-    src.connect(g).connect(this.sfxBus);
-    src.start();
+    if (this.synthetic[name]) {
+      // team-radio treatment: narrow band, a little crunch, squelch click on open
+      const t = this.ctx.currentTime;
+      const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 420;
+      const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2900;
+      const peak = this.ctx.createBiquadFilter(); peak.type = 'peaking'; peak.frequency.value = 1800; peak.Q.value = 1.2; peak.gain.value = 6;
+      const shaper = this.ctx.createWaveShaper();
+      shaper.curve = this.radioCurve || (this.radioCurve = makeRadioCurve());
+      const comp = this.ctx.createDynamicsCompressor(); comp.threshold.value = -24; comp.ratio.value = 8; comp.attack.value = 0.003;
+      src.connect(hp).connect(lp).connect(peak).connect(shaper).connect(comp).connect(g).connect(this.sfxBus);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(volume * 1.2, t + 0.04);
+      this.radioClick();
+      src.start(t + 0.06);
+      src.onended = () => this.radioClick();
+    } else {
+      src.connect(g).connect(this.sfxBus);
+      src.start();
+    }
     return true;
   }
 

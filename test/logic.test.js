@@ -204,7 +204,7 @@ test('grid: drivers reference real teams, unique ids, valid helmets and clips', 
     if (t.classic) assert.ok(n >= 1, `${t.id} has no driver`);
     else assert.equal(n, 2, `${t.id} should have two drivers`);
   }
-  for (const [id, c] of Object.entries(OPTIONAL_CLIPS)) assert.ok(c.file.startsWith('assets/clips/') && c.file.endsWith('.mp3'), id);
+  for (const [id, c] of Object.entries(OPTIONAL_CLIPS)) assert.ok(c.event && c.desc && /^\w+$/.test(id), id);
 });
 
 test('radio: driver quips and {d} substitution', async () => {
@@ -243,4 +243,19 @@ test('pit mini-game: sweep, judgement and stop times', () => {
   const s = stopSummary(['perfect', 'good', 'miss', 'good']);
   assert.deepEqual([s.misses, s.perfects, s.clean, s.record], [1, 1, false, false]);
   assert.ok(stopSummary(perfect).record);
+});
+
+test('meme pack: clip resolution prefers real recordings over the shipped voice pack', async () => {
+  const { resolveClip, OPTIONAL_CLIPS, CLIP_EXTENSIONS } = await import('../src/grid.js');
+  assert.equal(resolveClip('bwoah', ['bwoah.wav']), 'bwoah.wav');
+  assert.equal(resolveClip('bwoah', ['bwoah.wav', 'bwoah.mp3']), 'bwoah.mp3');
+  assert.equal(resolveClip('bwoah', ['bwoah.ogg', 'bwoah.wav']), 'bwoah.ogg');
+  assert.equal(resolveClip('bwoah', ['what.mp3']), null);
+  assert.deepEqual(CLIP_EXTENSIONS[0], 'mp3');
+  // every optional clip except thunder ships as a synthesised .wav
+  const fs = await import('node:fs');
+  for (const id of Object.keys(OPTIONAL_CLIPS)) {
+    if (id === 'thunder') continue;
+    assert.ok(fs.existsSync(new URL(`../assets/clips/${id}.wav`, import.meta.url)), `missing voice-pack clip ${id}.wav`);
+  }
 });

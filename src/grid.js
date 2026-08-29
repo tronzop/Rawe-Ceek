@@ -44,7 +44,7 @@ export const DRIVERS = [
   { id: 'tsunoda', name: 'Tsunoda', short: 'TSU', number: 22, team: 'redbull', helmet: ['#fff', '#e10600'],
     lines: { overtake: ['Yuki is asking WHAT?!', 'Clean move on Yuki.'], close: ['WHAT?!', 'Yuki is not happy.'] }, clip: { close: 'what' } },
   { id: 'norris', name: 'Norris', short: 'NOR', number: 4, team: 'mclaren', helmet: ['#d9ff3c', '#2b4bff'],
-    lines: { overtake: ['Yes boys! Sorry, wrong radio.', 'Lando is very sorry about that.'], close: ['Lando, leave the space!'] } },
+    lines: { overtake: ['Yes boys! Sorry, wrong radio.', 'Lando is very sorry about that.'], close: ['Lando, leave the space!'] }, clip: { overtake: 'yesboys' } },
   { id: 'piastri', name: 'Piastri', short: 'PIA', number: 81, team: 'mclaren', helmet: ['#111', '#ff8000'],
     lines: { overtake: ['Oscar said one word. It was fine.', 'Papaya rules, apparently.'], close: ['Oscar did not blink.'] } },
   { id: 'russell', name: 'Russell', short: 'RUS', number: 63, team: 'mercedes', helmet: ['#00d2be', '#111'],
@@ -107,33 +107,43 @@ export const driversFor = (teamId) => DRIVERS.filter((d) => d.team === teamId);
 export const teamOf = (driver) => TEAMS[driver.team];
 
 /**
- * Sound bites the game will use if you drop them into assets/. Every one is
- * optional: when a file is missing the game falls back to its synthesised cue
- * or the four clips that ship with the repo. `event` is where it plays.
+ * Meme-pack sound bites. The repo ships a synthesised "pit wall" reading of
+ * each one as assets/clips/<id>.wav (see deploy/tools/make-voice-pack.ps1);
+ * drop a real clip with the same stem and any of these extensions and it
+ * takes precedence: mp3 > ogg > m4a > wav. `event` is where it plays.
  */
+export const CLIP_EXTENSIONS = ['mp3', 'ogg', 'm4a', 'wav'];
+/** Picks the best available file for a clip id from a list of filenames, or null. */
+export function resolveClip(id, files) {
+  for (const ext of CLIP_EXTENSIONS) {
+    const f = `${id}.${ext}`;
+    if (files.includes(f)) return f;
+  }
+  return null;
+}
 export const OPTIONAL_CLIPS = {
-  lightsout: { file: 'assets/clips/lightsout.mp3', event: 'race start', desc: 'Crofty: "It\'s lights out and away we go!"' },
-  boxbox: { file: 'assets/clips/boxbox.mp3', event: 'pit window opens', desc: '"Box box, box box."' },
-  hammertime: { file: 'assets/clips/hammertime.mp3', event: 'pushing (alternates with the shipped clip)', desc: 'Bono: "It\'s hammer time."' },
-  bono: { file: 'assets/clips/bono.mp3', event: 'tyres over the cliff · overtaking Hamilton', desc: 'Hamilton: "Bono, my tyres are gone."' },
-  iamstupid: { file: 'assets/clips/iamstupid.mp3', event: 'oil · overtaking Leclerc', desc: 'Leclerc: "I am stupid, I am stupid."' },
-  nomichaelno: { file: 'assets/clips/nomichaelno.mp3', event: 'crash (alternates with the shipped clip)', desc: 'Masi/Toto: "No Michael, no! No, that was so not right."' },
-  isthatglock: { file: 'assets/clips/isthatglock.mp3', event: 'rain starts · overtaking Schumacher', desc: 'Brundle: "Is that Glock?!"' },
-  dudududu: { file: 'assets/clips/dudududu.mp3', event: 'overtaking Verstappen', desc: '"Du du du du Max Verstappen"' },
-  simplylovely: { file: 'assets/clips/simplylovely.mp3', event: 'chequered flag · close call with Verstappen', desc: 'Verstappen: "Simply lovely."' },
-  gp2engine: { file: 'assets/clips/gp2engine.mp3', event: 'overtaking Alonso', desc: 'Alonso: "GP2 engine! GP2! Aaargh!"' },
-  smoothoperator: { file: 'assets/clips/smoothoperator.mp3', event: 'overtaking Sainz', desc: 'Sainz: "Smooooth operator."' },
-  what: { file: 'assets/clips/what.mp3', event: 'close call with Tsunoda', desc: 'Tsunoda: "WHAT?!"' },
-  bwoah: { file: 'assets/clips/bwoah.mp3', event: 'overtaking Räikkönen', desc: 'Räikkönen: "Bwoah."' },
-  leavemealone: { file: 'assets/clips/leavemealone.mp3', event: 'close call with Räikkönen · safety car restart', desc: 'Räikkönen: "Leave me alone, I know what I\'m doing."' },
-  itsjames: { file: 'assets/clips/itsjames.mp3', event: 'overtaking Bottas · team-mate pass', desc: '"Valtteri, it\'s James."' },
-  multi21: { file: 'assets/clips/multi21.mp3', event: 'overtaking your team-mate', desc: 'Horner: "Multi 21, Seb. Multi 21."' },
-  getinthere: { file: 'assets/clips/getinthere.mp3', event: 'chequered flag', desc: 'Bono: "Get in there, Lewis!"' },
-  wearechecking: { file: 'assets/clips/wearechecking.mp3', event: 'safety car deployed · botched pit stop', desc: 'Ferrari: "We are checking."' },
-  safetycar: { file: 'assets/clips/safetycar.mp3', event: 'safety car deployed', desc: '"Safety car, safety car."' },
-  penalty: { file: 'assets/clips/penalty.mp3', event: '5 s penalty', desc: 'Any driver discovering a penalty. Loudly.' },
-  thunder: { file: 'assets/clips/thunder.mp3', event: 'lightning', desc: 'A real thunder rumble.' },
-  yesboys: { file: 'assets/clips/yesboys.mp3', event: 'overtaking Norris', desc: 'Norris: "Yes boys!"' },
+  lightsout: { event: 'race start', desc: 'Crofty: "It\'s lights out and away we go!"' },
+  boxbox: { event: 'pit window opens', desc: '"Box box, box box."' },
+  hammertime: { event: 'pushing (alternates with the shipped clip)', desc: 'Bono: "It\'s hammer time."' },
+  bono: { event: 'tyres over the cliff · overtaking Hamilton', desc: 'Hamilton: "Bono, my tyres are gone."' },
+  iamstupid: { event: 'oil · overtaking Leclerc', desc: 'Leclerc: "I am stupid, I am stupid."' },
+  nomichaelno: { event: 'crash (alternates with the shipped clip)', desc: 'Masi/Toto: "No Michael, no! No, that was so not right."' },
+  isthatglock: { event: 'rain starts · overtaking Schumacher', desc: 'Brundle: "Is that Glock?!"' },
+  dudududu: { event: 'overtaking Verstappen', desc: '"Du du du du Max Verstappen"' },
+  simplylovely: { event: 'chequered flag · close call with Verstappen', desc: 'Verstappen: "Simply lovely."' },
+  gp2engine: { event: 'overtaking Alonso', desc: 'Alonso: "GP2 engine! GP2! Aaargh!"' },
+  smoothoperator: { event: 'overtaking Sainz', desc: 'Sainz: "Smooooth operator."' },
+  what: { event: 'close call with Tsunoda', desc: 'Tsunoda: "WHAT?!"' },
+  bwoah: { event: 'overtaking Räikkönen', desc: 'Räikkönen: "Bwoah."' },
+  leavemealone: { event: 'close call with Räikkönen · safety car restart', desc: 'Räikkönen: "Leave me alone, I know what I\'m doing."' },
+  itsjames: { event: 'overtaking Bottas · team-mate pass', desc: '"Valtteri, it\'s James."' },
+  multi21: { event: 'overtaking your team-mate', desc: 'Horner: "Multi 21, Seb. Multi 21."' },
+  getinthere: { event: 'chequered flag', desc: 'Bono: "Get in there, Lewis!"' },
+  wearechecking: { event: 'safety car deployed · botched pit stop', desc: 'Ferrari: "We are checking."' },
+  safetycar: { event: 'safety car deployed', desc: '"Safety car, safety car."' },
+  penalty: { event: '5 s penalty', desc: 'Any driver discovering a penalty. Loudly.' },
+  thunder: { event: 'lightning', desc: 'A real thunder rumble.' },
+  yesboys: { event: 'overtaking Norris', desc: 'Norris: "Yes boys!"' },
 };
 
 // Optional driver portraits live at assets/drivers/<driver id>.<png|jpg|webp>.

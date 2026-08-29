@@ -94,6 +94,7 @@ export class World {
     // safety car
     this.sc = { active: false, phase: 'none', timer: 0, cooldown: SAFETY_CAR.firstAfter, restartTimer: 0, clean: true, car: null };
     this.penalty = 0;
+    this.cine = 0; // 0..1 pit-entry cinematic blend
     // slipstream
     this.tow = 0;
     this.towRival = null;
@@ -173,15 +174,19 @@ export class World {
       return;
     }
     this.elapsed += dt;
+    // "box box" cinematic: the world drops into slow motion while the car peels off
+    const cineTarget = this.pit.requested || (this.pit.inLane && this.pit.phase === 'entry') ? 1 : 0;
+    this.cine += (cineTarget - this.cine) * Math.min(1, dt * 5);
+    const wdt = dt * lerp(1, 0.45, this.cine); // world time for everything that could hit you
     this.updateWeather(dt);
     this.updateVenue(dt);
     this.updateSafetyCar(dt);
     this.updatePit(dt, input);
     this.updatePlayer(dt, input);
-    this.updateSpawns(dt);
-    this.updateHazards(dt);
+    this.updateSpawns(wdt);
+    this.updateHazards(wdt);
     this.updateParticles(dt);
-    this.scroll += this.speed * dt;
+    this.scroll += this.speed * wdt;
     // no distance credit while serving a penalty: the stewards add it to your time
     if (this.penalty <= 0) this.distance += this.speed * dt * WORLD.metresPerPx;
     this.score = Math.floor(this.distance) + this.bonus;
@@ -335,8 +340,10 @@ export class World {
       // the highest the car can steer (see the clamp in updatePlayer)
       const entryY = this.trackTop + PLAYER.height / 2 - 12;
       if (pit.requested) {
-        p.y += (entryY - p.y) * Math.min(1, dt * 6);
-        p.vy = 0;
+        // arc up towards the wall, lifting off the throttle as we go
+        p.y += (entryY - p.y) * Math.min(1, dt * 4.5);
+        p.vy = -Math.abs(entryY - p.y) * 3;
+        p.throttle += (0.8 - p.throttle) * Math.min(1, dt * 3);
       }
       // Entering: window open and the car is at the top edge (steered or requested).
       if (open && (input.up || pit.requested) && p.y <= entryY + 2) {
@@ -488,7 +495,8 @@ export class World {
     this.speed += (target - this.speed) * Math.min(1, dt * accel);
 
     // vertical movement (grip-limited) — pointer overrides keys when active
-    if (!inPit) {
+    // (steering is handed to the pit-entry glide once you have called for the box)
+    if (!inPit && !this.pit.requested) {
       let dir = 0;
       if (input.up) dir -= 1;
       if (input.down) dir += 1;
@@ -508,6 +516,8 @@ export class World {
       if (p.y < lo) { p.y = lo; p.vy = Math.max(0, p.vy); }
       if (p.y > hi) { p.y = hi; p.vy = Math.min(0, p.vy); }
       p.tilt += ((p.vy / vmax) * 0.16 - p.tilt) * Math.min(1, dt * 8);
+    } else if (this.pit.requested) {
+      p.tilt += (-0.12 - p.tilt) * Math.min(1, dt * 6); // nose up toward the pit wall
     } else {
       p.vy = 0;
       p.tilt *= 0.9;
@@ -682,8 +692,8 @@ export class World {
       const margin = 260;
       if (hz.x < -margin || hz.x > this.width + margin + 600) continue;
 
-      // interactions
-      if (!this.pit.inLane) this.collide(hz, prect, p);
+      // interactions — none once you have called for the box: the car is ghosted on its way in
+      if (!this.pit.inLane && !this.pit.requested) this.collide(hz, prect, p);
       if (hz.dead) continue;
 
       // overtake bookkeeping: rival fully behind the player

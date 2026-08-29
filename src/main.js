@@ -7,7 +7,7 @@ import { AudioEngine } from './audio.js';
 import { radioLine } from './radio.js';
 import { Leaderboard } from './leaderboard.js';
 import { Career, TROPHIES } from './career.js';
-import { DRIVERS, OPTIONAL_CLIPS } from './grid.js';
+import { DRIVERS, OPTIONAL_CLIPS, resolveClip } from './grid.js';
 import { clamp, formatDistance, lerp } from './logic.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -251,13 +251,14 @@ renderCareer();
 // ---------- meme pack checklist (which optional clips / portraits are present) ----------
 async function renderMemePack() {
   const a = await assetsAvailable;
-  const clips = Object.entries(OPTIONAL_CLIPS).map(([id, c]) => ({ id, ...c, ok: a.clips.includes(c.file.slice('assets/clips/'.length)) }));
+  const clips = Object.entries(OPTIONAL_CLIPS).map(([id, c]) => { const file = resolveClip(id, a.clips); return { id, ...c, file: file ? `assets/clips/${file}` : `assets/clips/${id}.mp3`, ok: !!file, synth: !!file && file.endsWith('.wav') }; });
   const stems = new Set(a.drivers.map((f) => f.replace(/\.[^.]+$/, '')));
   const drivers = DRIVERS.map((d) => ({ ...d, ok: stems.has(d.id) }));
   const nClips = clips.filter((c) => c.ok).length;
   const nPics = drivers.filter((d) => d.ok).length;
-  $('#memeSummary').textContent = `${nClips}/${clips.length} clips · ${nPics}/${drivers.length} portraits`;
-  $('#memeList').innerHTML = clips.map((c) => `<div class="trophy ${c.ok ? 'won' : 'locked'}"><b>${c.ok ? '🔊' : '🔇'} ${c.desc}</b><span>${c.file} — ${c.event}</span></div>`).join('')
+  const nReal = clips.filter((c) => c.ok && !c.synth).length;
+  $('#memeSummary').textContent = `${nClips}/${clips.length} clips (${nReal} real, ${nClips - nReal} pit-wall voice) · ${nPics}/${drivers.length} portraits`;
+  $('#memeList').innerHTML = clips.map((c) => `<div class="trophy ${c.ok ? (c.synth ? 'locked' : 'won') : 'locked'}"><b>${c.ok ? (c.synth ? '📻' : '🔊') : '🔇'} ${c.desc}</b><span>${c.synth ? `pit-wall voice · replace with assets/clips/${c.id}.mp3` : c.file} — ${c.event}</span></div>`).join('')
     + `<div class="trophy ${nPics ? 'won' : 'locked'}"><b>🖼 Driver portraits</b><span>assets/drivers/&lt;id&gt;.png — shown on the retirement screen when you hit that driver. Present: ${drivers.filter((d) => d.ok).map((d) => d.name).join(', ') || 'none'}</span></div>`;
 }
 renderMemePack();

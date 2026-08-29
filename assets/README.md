@@ -18,9 +18,14 @@ The game looks for the files below and uses them when present; anything missing
 falls back to the shipped clips or a synthesised cue, so you can add as many or
 as few as you like. The title screen's **Meme pack** panel shows what it found.
 
-Clips are not included in the repo: team-radio audio is FOM's copyright, so
-source your own (the usual meme soundboards have all of these — search the
-quote, download, trim to 1–4 s, save as MP3 under the exact filename).
+The real team-radio recordings are FOM's copyright, so they are not in the repo.
+Instead `assets/clips/` ships a **synthesised pit-wall voice pack**: every quote
+below read by Windows TTS (`<id>.wav`, regenerate with
+`pwsh deploy/tools/make-voice-pack.ps1`), which the game runs through a
+team-radio filter (band-pass, crunch, squelch). To use the genuine clip, save it
+next to the `.wav` with the same stem — `mp3`, `ogg` or `m4a` take precedence
+over `wav` automatically. Search the quote on the usual soundboards, trim to
+1–4 s, save under the exact filename.
 
 Save into `assets/clips/`:
 
