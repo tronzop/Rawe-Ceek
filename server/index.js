@@ -138,7 +138,8 @@ export function listAssets() {
       return fs.readdirSync(path.join(ROOT, 'assets', dir)).filter((f) => exts.includes(path.extname(f).toLowerCase())).sort();
     } catch { return []; }
   };
-  return { clips: list('clips', ['.mp3', '.ogg', '.wav', '.m4a']), drivers: list('drivers', ['.png', '.jpg', '.jpeg', '.webp', '.gif']) };
+  const audio = ['.mp3', '.ogg', '.wav', '.m4a'];
+  return { clips: list('clips', audio), drivers: list('drivers', ['.png', '.jpg', '.jpeg', '.webp', '.gif']), engine: list('engine', audio) };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

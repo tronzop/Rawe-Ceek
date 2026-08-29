@@ -24,6 +24,7 @@ services:
       - /mnt/user/appdata/rawe-ceek/data:/data
       - /mnt/user/appdata/rawe-ceek/assets/clips:/app/assets/clips
       - /mnt/user/appdata/rawe-ceek/assets/drivers:/app/assets/drivers
+      - /mnt/user/appdata/rawe-ceek/assets/engine:/app/assets/engine
     restart: unless-stopped
     labels:
       - com.centurylinklabs.watchtower.enable=true

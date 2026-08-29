@@ -9,7 +9,7 @@ APP=/mnt/user/appdata/rawe-ceek
 PORT=${PORT:-3732}
 IMAGE=ghcr.io/tronzop/rawe-ceek:latest
 
-mkdir -p "$APP/data" "$APP/assets/clips" "$APP/assets/drivers"
+mkdir -p "$APP/data" "$APP/assets/clips" "$APP/assets/drivers" "$APP/assets/engine"
 
 docker pull "$IMAGE"
 docker rm -f rawe-ceek >/dev/null 2>&1 || true
@@ -20,6 +20,7 @@ docker run -d --name rawe-ceek \
   -v "$APP/data:/data" \
   -v "$APP/assets/clips:/app/assets/clips" \
   -v "$APP/assets/drivers:/app/assets/drivers" \
+  -v "$APP/assets/engine:/app/assets/engine" \
   -l com.centurylinklabs.watchtower.enable=true \
   -l net.unraid.docker.webui="http://[IP]:[PORT:$PORT]/" \
   -l net.unraid.docker.icon=https://raw.githubusercontent.com/tronzop/Rawe-Ceek/main/assets/favicon.png \

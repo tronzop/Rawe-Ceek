@@ -259,3 +259,16 @@ test('meme pack: clip resolution prefers real recordings over the shipped voice 
     assert.ok(fs.existsSync(new URL(`../assets/clips/${id}.wav`, import.meta.url)), `missing voice-pack clip ${id}.wav`);
   }
 });
+
+test('engine model: gears climb with speed, rpm saws through the range, V12 fires 6× per rev', () => {
+  const { engineState, ENGINE } = logic;
+  assert.equal(engineState(0).gear, 1);
+  assert.equal(engineState(1).gear, ENGINE.gears);
+  assert.ok(engineState(0.05).rpmNorm < engineState(0.12).rpmNorm, 'rpm climbs within a gear');
+  const before = engineState(1 / ENGINE.gears - 0.001), after = engineState(1 / ENGINE.gears + 0.001);
+  assert.equal(after.gear, before.gear + 1);
+  assert.ok(after.rpmNorm < before.rpmNorm, 'rpm drops on the upshift');
+  const s = engineState(0);
+  assert.ok(Math.abs(s.firingHz - (s.rpm / 60) * 6) < 1e-9);
+  assert.ok(engineState(1).firingHz > 1000 && engineState(0).firingHz > 300);
+});

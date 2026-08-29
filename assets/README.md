@@ -66,3 +66,18 @@ alonso01`.
 
 Liveries, helmets, numbers and radio quips live in `src/grid.js` — add a driver
 there and they appear on track immediately.
+
+## Real engine sound (optional)
+
+The engine is synthesised: a procedural V12 whose firing frequency follows the
+revs through an eight-speed box, with exhaust formants, soft clipping, intake
+hiss and an ignition cut on upshifts. If you have recordings of a real V12 you
+are allowed to use, drop two seamless loops into `assets/engine/` and the game
+switches to them automatically, pitch-tracking and crossfading by rpm:
+
+| File | What to record |
+| --- | --- |
+| `low.wav` (or mp3/ogg/m4a) | 2–4 s steady loop near idle / low revs |
+| `high.wav` | 2–4 s steady loop near the redline |
+
+Both must be present; if either is missing the synth plays.

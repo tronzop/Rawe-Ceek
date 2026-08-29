@@ -179,3 +179,24 @@ export function stopSummary(results) {
   const perfects = results.filter((r) => r === 'perfect').length;
   return { time, misses, perfects, clean: misses === 0, record: misses === 0 && time < PITGAME.recordUnder };
 }
+
+// ---------------------------------------------------------------------------
+// Engine model (shared by the synth and the sample player)
+// ---------------------------------------------------------------------------
+export const ENGINE = { gears: 8, idleRpm: 4000, maxRpm: 12500, cylinders: 12 };
+/**
+ * Gear, normalised rpm (0..1 of the rev range) and the V12 firing frequency for a
+ * speed ratio 0..1. Sequential box: rpm climbs through a gear and drops on the upshift.
+ */
+export function engineState(speedRatio) {
+  const r = clamp(speedRatio, 0, 1);
+  const pos = r * ENGINE.gears;
+  const gear = Math.min(ENGINE.gears, Math.floor(pos) + 1);
+  const inGear = pos - (gear - 1); // 0..1
+  // the lower gears rev out over a smaller speed band, so the redline arrives sooner
+  const rpmNorm = clamp(0.3 + 0.7 * inGear, 0, 1);
+  const rpm = ENGINE.idleRpm + rpmNorm * (ENGINE.maxRpm - ENGINE.idleRpm);
+  // a four-stroke fires every cylinder once per two revolutions
+  const firingHz = (rpm / 60) * (ENGINE.cylinders / 2);
+  return { gear, rpmNorm, rpm, firingHz };
+}

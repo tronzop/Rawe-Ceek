@@ -76,6 +76,7 @@ export class Renderer {
     for (const hz of world.hazards) if (hz.type !== 'oil' && hz.type !== 'drs') this.drawHazard(hz, world);
     if (world.sc.car) this.drawSafetyCar(world);
     if (world.cine > 0.02) this.drawPitApproach(world, W);
+    if (world.player.grace > 0 && world.cine <= 0.02) this.drawGraceRing(world);
     this.drawPlayer(world);
     // stationary car: mechanics at each wheel + the wheel-gun mini-game (drawn late so nothing paints over it)
     if (world.pit.inLane && world.pit.phase === 'stop' && world.pit.game) this.drawPitGame(world);
@@ -507,33 +508,37 @@ export class Renderer {
     const { ctx } = this;
     const a = world.cine;
     const p = world.player;
+    const exiting = world.pit.phase === 'merge';
     // dim everything that can no longer hurt you
     ctx.fillStyle = `rgba(4,6,14,${0.35 * a})`;
     ctx.fillRect(0, world.trackTop - 12, W, world.trackBottom - world.trackTop + 24);
-    // lit corridor from the car up to the pit gap
+    // lit corridor: up to the pit gap on the way in, down the blend line on the way out
     const gapX = p.x + 60;
+    const color = exiting ? '255,212,0' : '46,204,113';
     const g = ctx.createLinearGradient(0, world.trackBottom, 0, world.pitBottom);
-    g.addColorStop(0, 'rgba(46,204,113,0)');
-    g.addColorStop(1, `rgba(46,204,113,${0.28 * a})`);
+    g.addColorStop(0, `rgba(${color},${exiting ? 0.22 * a : 0})`);
+    g.addColorStop(1, `rgba(${color},${exiting ? 0 : 0.28 * a})`);
     ctx.fillStyle = g;
     ctx.beginPath();
     ctx.moveTo(p.x - 140, world.trackBottom);
-    ctx.lineTo(p.x + 140, world.trackBottom);
+    ctx.lineTo(p.x + 140 + (exiting ? 260 : 0), world.trackBottom);
     ctx.lineTo(gapX + 140, world.pitBottom);
     ctx.lineTo(gapX - 140, world.pitBottom);
     ctx.closePath();
     ctx.fill();
-    // chevrons marching up the corridor
+    // chevrons marching along the corridor
     const n = 5;
     for (let i = 0; i < n; i++) {
       const t = ((i / n) + (this.time * 0.9) % 1) % 1;
-      const y = lerp(world.trackBottom - 20, world.trackTop + 10, t);
-      const x = lerp(p.x, gapX, t);
+      const tt = exiting ? 1 - t : t;
+      const y = lerp(world.trackBottom - 20, world.trackTop + 10, tt);
+      const x = lerp(p.x, gapX, tt) + (exiting ? (1 - tt) * 220 : 0);
       ctx.globalAlpha = a * (0.25 + 0.75 * Math.sin(t * Math.PI));
-      ctx.strokeStyle = '#2ecc71';
+      ctx.strokeStyle = `rgb(${color})`;
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.moveTo(x - 18, y + 10); ctx.lineTo(x, y - 4); ctx.lineTo(x + 18, y + 10);
+      if (exiting) { ctx.moveTo(x - 18, y - 10); ctx.lineTo(x + 6, y + 4); ctx.lineTo(x + 18, y - 14); }
+      else { ctx.moveTo(x - 18, y + 10); ctx.lineTo(x, y - 4); ctx.lineTo(x + 18, y + 10); }
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -542,6 +547,21 @@ export class Renderer {
     ctx.translate(p.x, p.y);
     ctx.rotate(p.tilt);
     ctx.strokeStyle = `rgba(125,249,255,${0.75 * a * (0.6 + 0.4 * Math.sin(this.time * 10))})`;
+    ctx.lineWidth = 3;
+    roundRect(ctx, -PLAYER.width / 2 - 8, -PLAYER.height / 2 - 8, PLAYER.width + 16, PLAYER.height + 16, 14);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Fading ghost outline for the grace moment after rejoining the track. */
+  drawGraceRing(world) {
+    const { ctx } = this;
+    const p = world.player;
+    const a = clamp(p.grace / 0.8, 0, 1);
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.tilt);
+    ctx.strokeStyle = `rgba(255,212,0,${0.7 * a * (0.6 + 0.4 * Math.sin(this.time * 10))})`;
     ctx.lineWidth = 3;
     roundRect(ctx, -PLAYER.width / 2 - 8, -PLAYER.height / 2 - 8, PLAYER.width + 16, PLAYER.height + 16, 14);
     ctx.stroke();
@@ -561,10 +581,11 @@ export class Renderer {
     ctx.font = `900 ${18 + 6 * a}px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('BOX BOX', W / 2, H - bar / 2);
+    const exiting = world.pit.phase === 'merge';
+    ctx.fillText(exiting ? 'GO GO GO' : 'BOX BOX', W / 2, H - bar / 2);
     ctx.fillStyle = '#c9ced9';
     ctx.font = `bold 12px ${FONT}`;
-    ctx.fillText(`${COMPOUNDS[world.nextCompound].label} · get ready on the wheel gun`, W / 2, bar / 2);
+    ctx.fillText(exiting ? `${COMPOUNDS[world.tyre.compound].label} fitted · rejoining, tyres cold` : `${COMPOUNDS[world.nextCompound].label} · get ready on the wheel gun`, W / 2, bar / 2);
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
   }
@@ -813,7 +834,7 @@ export class Renderer {
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.tilt + p.angle);
-    if (world.pit.requested) ctx.globalAlpha = 0.72 + 0.2 * Math.sin(this.time * 14); // ghosted on the way in
+    if (world.pit.requested || world.pit.phase === 'merge' || p.grace > 0) ctx.globalAlpha = 0.72 + 0.2 * Math.sin(this.time * 14); // ghosted in, out and just after
     // shadow
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();

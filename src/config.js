@@ -71,6 +71,9 @@ export const PIT = {
   laneTravel: 2.2,
   // Seconds after a stop before the window will accept you again.
   cooldown: 10,
+  // Rejoining: time spent arcing back onto the track, then ghosted grace once you are on it.
+  mergeTime: 1.1,
+  graceAfterExit: 1.6,
 };
 
 export const WEATHER = {

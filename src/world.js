@@ -83,6 +83,7 @@ export class World {
       angle: 0,
       frame: 0,
       damage: 0, // debris hits reduce max throttle a little
+      grace: 0, // seconds of invulnerability after rejoining from the pits
       alive: true,
     };
     // calendar
@@ -174,8 +175,9 @@ export class World {
       return;
     }
     this.elapsed += dt;
-    // "box box" cinematic: the world drops into slow motion while the car peels off
-    const cineTarget = this.pit.requested || (this.pit.inLane && this.pit.phase === 'entry') ? 1 : 0;
+    // "box box" cinematic: the world drops into slow motion while the car peels off / rejoins
+    const cineTarget = this.pit.requested || (this.pit.inLane && (this.pit.phase === 'entry' || this.pit.phase === 'merge')) ? 1 : 0;
+    if (this.player.grace > 0) this.player.grace = Math.max(0, this.player.grace - dt);
     this.cine += (cineTarget - this.cine) * Math.min(1, dt * 5);
     const wdt = dt * lerp(1, 0.45, this.cine); // world time for everything that could hit you
     this.updateWeather(dt);
@@ -358,8 +360,15 @@ export class World {
     }
 
     pit.timer -= dt;
-    // glide the car into the lane
-    p.y += (this.pitY - p.y) * Math.min(1, dt * 6);
+    if (pit.phase === 'merge') {
+      // arc down from the lane onto the top of the track, nose dipping
+      const targetY = this.trackTop + PLAYER.height;
+      p.y += (targetY - p.y) * Math.min(1, dt * 4);
+      p.tilt += (0.12 - p.tilt) * Math.min(1, dt * 5);
+    } else {
+      // glide the car into the lane
+      p.y += (this.pitY - p.y) * Math.min(1, dt * 6);
+    }
     switch (pit.phase) {
       case 'entry':
         if (pit.timer <= 0) {
@@ -408,11 +417,27 @@ export class World {
         break;
       }
       case 'exit':
+        // roll down the lane, then peel back onto the track over the blend line
+        if (pit.timer <= 0) {
+          pit.phase = 'merge';
+          pit.timer = PIT.mergeTime;
+          // nothing may be sitting where we are about to rejoin
+          const mergeY = this.trackTop + PLAYER.height;
+          for (const hz of this.hazards) {
+            if (hz.x > p.x - 200 && hz.x < p.x + 520 && hz.y < mergeY + 90) {
+              if (hz.type === 'rival' || hz.type === 'stranded') hz.y = Math.max(hz.y, this.trackBottom - hz.h);
+              else hz.dead = true;
+            }
+          }
+          this.emit('pitExit');
+        }
+        break;
+      case 'merge':
         if (pit.timer <= 0) {
           pit.inLane = false;
           pit.phase = 'none';
           pit.cooldown = PIT.cooldown; // fresh tyres: the wall will not take you back straight away
-          p.y = this.trackTop + 30;
+          p.grace = PIT.graceAfterExit; // ghosted for a moment while the field streams past
           this.emit('coldTyres');
         }
         break;
@@ -575,7 +600,8 @@ export class World {
 
   // ----- hazards -----
   updateSpawns(dt) {
-    if (this.pit.inLane) return;
+    // no new hazards while you are on the way in, in the lane, or in the grace moment after rejoining
+    if (this.pit.inLane || this.pit.requested || this.player.grace > 0) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
       if (this.sc.active) {
@@ -692,8 +718,8 @@ export class World {
       const margin = 260;
       if (hz.x < -margin || hz.x > this.width + margin + 600) continue;
 
-      // interactions — none once you have called for the box: the car is ghosted on its way in
-      if (!this.pit.inLane && !this.pit.requested) this.collide(hz, prect, p);
+      // interactions — none while boxing, merging back, or in the grace moment after rejoining
+      if (!this.pit.inLane && !this.pit.requested && p.grace <= 0) this.collide(hz, prect, p);
       if (hz.dead) continue;
 
       // overtake bookkeeping: rival fully behind the player

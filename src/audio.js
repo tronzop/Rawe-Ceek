@@ -3,6 +3,7 @@
 // Everything is created lazily on the first user gesture (browser autoplay rules).
 import { STORAGE_KEYS } from './config.js';
 import { OPTIONAL_CLIPS, resolveClip } from './grid.js';
+import { engineState } from './logic.js';
 
 // The four meme clips that ship in assets/. The meme-pack clips (OPTIONAL_CLIPS)
 // are resolved at load time from whatever files exist in assets/clips/.
@@ -13,6 +14,18 @@ const SFX_FILES = {
   sonotright: 'assets/sonotright.mp3',
 };
 
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+/** Asymmetric soft clip for the exhaust: adds even harmonics like a real pipe. */
+function makeEngineCurve() {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    const y = Math.tanh(x * 1.8 + 0.15 * x * x);
+    curve[i] = y / Math.tanh(1.95);
+  }
+  return curve;
+}
 /** Soft-clip transfer curve for the radio voice. */
 function makeRadioCurve() {
   const n = 1024;
@@ -44,6 +57,8 @@ export class AudioEngine {
     this.sfxBus = null;
     this.buffers = {};
     this.synthetic = {}; // clip name -> true when it is a TTS placeholder (gets the radio filter)
+    this.channelBusy = false; // a sample clip is currently playing
+    this.queue = []; // clips waiting for the channel
     this.musicOn = readPref(STORAGE_KEYS.music, true);
     this.sfxOn = readPref(STORAGE_KEYS.sfx, true);
     this.lastPlayed = {};
@@ -131,14 +146,39 @@ export class AudioEngine {
     return this.sfxOn;
   }
 
-  // ---------- one-shot samples ----------
-  play(name, { volume = 1, minGap = 0, rate = 1 } = {}) {
+  // ---------- one-shot samples: one radio channel, clips never talk over each other ----------
+  /**
+   * Plays a clip, or queues it if another clip is on the channel. Returns true when it
+   * will be heard (now or shortly). Queued clips expire after `queueTtl` seconds and the
+   * queue holds at most `maxQueue`, so a burst of events never becomes a monologue.
+   */
+  play(name, opts = {}) {
     if (!this.ctx) return false;
+    const { minGap = 0 } = opts;
     const now = performance.now();
     if (minGap && now - (this.lastPlayed[name] || -1e9) < minGap * 1000) return false;
+    if (!this.buffers[name]) return false;
+    if (this.channelBusy) {
+      if (this.queue.length >= 2 || this.queue.some((q) => q.name === name)) return false;
+      this.queue.push({ name, opts, at: now });
+      this.lastPlayed[name] = now;
+      return true;
+    }
+    return this.playNow(name, opts);
+  }
+  /** Channel finished: start the next queued clip that is still fresh. */
+  nextInQueue() {
+    this.channelBusy = false;
+    while (this.queue.length) {
+      const q = this.queue.shift();
+      if (performance.now() - q.at < 4500) { this.playNow(q.name, q.opts); return; }
+    }
+  }
+  playNow(name, { volume = 1, rate = 1 } = {}) {
     const buf = this.buffers[name];
     if (!buf) return false;
-    this.lastPlayed[name] = now;
+    this.lastPlayed[name] = performance.now();
+    this.channelBusy = true;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.playbackRate.value = rate;
@@ -158,10 +198,11 @@ export class AudioEngine {
       g.gain.exponentialRampToValueAtTime(volume * 1.2, t + 0.04);
       this.radioClick();
       src.start(t + 0.06);
-      src.onended = () => this.radioClick();
+      src.onended = () => { this.radioClick(); this.nextInQueue(); };
     } else {
       src.connect(g).connect(this.sfxBus);
       src.start();
+      src.onended = () => this.nextInQueue();
     }
     return true;
   }
@@ -244,54 +285,143 @@ export class AudioEngine {
     src.stop(t + 0.75);
   }
 
-  // ---------- engine drone ----------
+  // ---------- engine: procedural V12, or real loops when assets/engine/*.wav exist ----------
   createEngine() {
     const ctx = this.ctx;
-    const osc = ctx.createOscillator();
-    osc.type = 'sawtooth';
-    const osc2 = ctx.createOscillator();
-    osc2.type = 'square';
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass';
-    lp.frequency.value = 400;
-    lp.Q.value = 2;
-    const g = ctx.createGain();
-    g.gain.value = 0;
-    const g2 = ctx.createGain();
-    g2.gain.value = 0.35;
-    osc.connect(lp);
-    osc2.connect(g2).connect(lp);
-    lp.connect(g).connect(this.sfxBus);
-    osc.start();
-    osc2.start();
-    this.engine = { osc, osc2, lp, g, gear: 1, rpm: 0.3 };
+    const master = ctx.createGain();
+    master.gain.value = 0;
+    // exhaust colouring shared by both sources: two formant peaks, soft clip, a little air
+    const f1 = ctx.createBiquadFilter(); f1.type = 'peaking'; f1.frequency.value = 900; f1.Q.value = 1.1; f1.gain.value = 7;
+    const f2 = ctx.createBiquadFilter(); f2.type = 'peaking'; f2.frequency.value = 2600; f2.Q.value = 1.4; f2.gain.value = 5;
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 60;
+    const shaper = ctx.createWaveShaper();
+    shaper.curve = this.engineCurve || (this.engineCurve = makeEngineCurve());
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 6; comp.attack.value = 0.005; comp.release.value = 0.12;
+    hp.connect(f1).connect(f2).connect(shaper).connect(comp).connect(master).connect(this.sfxBus);
+
+    // --- procedural V12 ---
+    // cylinder bank: firing fundamental, its half (crank) and sub-harmonics, each slightly detuned
+    const oscs = [
+      { type: 'sawtooth', ratio: 1, gain: 0.5 }, // firing frequency: the scream
+      { type: 'sawtooth', ratio: 0.5, gain: 0.32 }, // per-revolution content
+      { type: 'square', ratio: 0.25, gain: 0.16 }, // body / bank imbalance
+      { type: 'sawtooth', ratio: 1.01, gain: 0.22 }, // detuned twin for width
+      { type: 'triangle', ratio: 2, gain: 0.12 }, // top-end sizzle
+    ].map((spec) => {
+      const o = ctx.createOscillator();
+      o.type = spec.type;
+      const g = ctx.createGain();
+      g.gain.value = spec.gain;
+      o.connect(g);
+      o.start();
+      return { o, g, ratio: spec.ratio };
+    });
+    const synthBus = ctx.createGain();
+    synthBus.gain.value = 1;
+    for (const { g } of oscs) g.connect(synthBus);
+    // intake / exhaust turbulence: noise tracking the firing frequency
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noise;
+    noise.loop = true;
+    const nbp = ctx.createBiquadFilter(); nbp.type = 'bandpass'; nbp.Q.value = 0.9;
+    const ng = ctx.createGain(); ng.gain.value = 0.08;
+    noise.connect(nbp).connect(ng).connect(synthBus);
+    noise.start();
+    // slow wobble so a held rpm never sounds static
+    const lfo = ctx.createOscillator(); lfo.frequency.value = 6.3;
+    const lfoG = ctx.createGain(); lfoG.gain.value = 3;
+    lfo.connect(lfoG);
+    for (const { o } of oscs) lfoG.connect(o.detune);
+    lfo.start();
+    // throttle-body tone control: opens with rpm
+    const tone = ctx.createBiquadFilter(); tone.type = 'lowpass'; tone.Q.value = 1.6; tone.frequency.value = 800;
+    synthBus.connect(tone).connect(hp);
+
+    // --- real loops (optional) ---
+    const sampleBus = ctx.createGain();
+    sampleBus.gain.value = 0;
+    sampleBus.connect(hp);
+
+    this.engine = { master, oscs, nbp, ng, tone, synthBus, sampleBus, gear: 1, rpm: 0.3, cut: 0, loops: null };
+    this.loadEngineLoops();
   }
 
   /**
-   * Called every frame. speedRatio 0..1 of max speed; running=false silences the engine.
-   * Simulates a 7-speed box: rpm climbs within a gear and drops on the upshift.
+   * Looks for assets/engine/low.* and high.* (idle-ish and near-redline loops of a real
+   * engine). When both decode, they replace the synth: pitch-tracked and crossfaded by rpm.
    */
-  updateEngine(dt, speedRatio, running) {
+  async loadEngineLoops() {
+    const av = await (this.available || Promise.resolve(null)).catch(() => null);
+    const files = av?.engine || [];
+    const find = (stem) => files.find((f) => f.replace(/\.[^.]+$/, '') === stem);
+    const lowF = find('low'), highF = find('high');
+    if (!lowF || !highF || !this.engine) return;
+    try {
+      const load = async (f) => this.ctx.decodeAudioData(await (await fetch(`assets/engine/${f}`)).arrayBuffer());
+      const [low, high] = await Promise.all([load(lowF), load(highF)]);
+      const mk = (buf) => {
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf; src.loop = true;
+        const g = this.ctx.createGain(); g.gain.value = 0;
+        src.connect(g).connect(this.engine.sampleBus);
+        src.start();
+        return { src, g };
+      };
+      this.engine.loops = { low: mk(low), high: mk(high) };
+      this.engine.synthBus.gain.setTargetAtTime(0, this.ctx.currentTime, 0.3);
+      this.engine.sampleBus.gain.setTargetAtTime(1, this.ctx.currentTime, 0.3);
+    } catch { /* fall back to the synth */ }
+  }
+
+  /**
+   * Called every frame. speedRatio 0..1 of max speed; running=false silences the engine;
+   * throttle 0..1 shapes loudness/tone; boosting adds a harder edge.
+   */
+  updateEngine(dt, speedRatio, running, throttle = 1, boosting = false) {
     if (!this.engine) return;
     const e = this.engine;
     const t = this.ctx.currentTime;
-    const targetGain = running ? 0.11 : 0;
-    e.g.gain.setTargetAtTime(targetGain, t, 0.08);
-    if (!running) return;
-    const gears = 7;
-    const pos = speedRatio * gears;
-    const gear = Math.min(gears, Math.floor(pos) + 1);
-    const inGear = pos - (gear - 1); // 0..1
-    const rpm = 0.25 + 0.75 * inGear;
-    e.rpm += (rpm - e.rpm) * Math.min(1, dt * 12);
-    const f = 55 + e.rpm * 190 + gear * 6;
-    e.osc.frequency.setTargetAtTime(f, t, 0.03);
-    e.osc2.frequency.setTargetAtTime(f * 0.5, t, 0.03);
-    e.lp.frequency.setTargetAtTime(300 + e.rpm * 1500, t, 0.05);
+    const { gear, rpmNorm, firingHz } = engineState(speedRatio);
+    // upshift: brief ignition cut, then the revs fall into the next gear
     if (gear !== e.gear) {
+      if (gear > e.gear) { e.cut = 0.09; this.gearClunk(gear); }
       e.gear = gear;
-      this.blip(120 + gear * 15, 0.05, 'sawtooth', 0.06);
     }
+    e.cut = Math.max(0, e.cut - dt);
+    e.rpm += (rpmNorm - e.rpm) * Math.min(1, dt * (rpmNorm < e.rpm ? 9 : 5));
+    const load = clamp01(0.55 + throttle * 0.45 + (boosting ? 0.15 : 0));
+    const vol = running ? (e.cut > 0 ? 0.03 : 0.16 * load * (0.6 + 0.4 * e.rpm)) : 0;
+    e.master.gain.setTargetAtTime(vol, t, e.cut > 0 ? 0.01 : 0.06);
+    if (!running) return;
+    // live firing frequency from the smoothed rpm
+    const rpm = 4000 + e.rpm * 8500;
+    const fHz = (rpm / 60) * 6;
+    for (const { o, ratio } of e.oscs) o.frequency.setTargetAtTime(fHz * ratio, t, 0.02);
+    e.nbp.frequency.setTargetAtTime(fHz * 2.2, t, 0.03);
+    e.ng.gain.setTargetAtTime(0.05 + 0.12 * e.rpm * throttle, t, 0.05);
+    e.tone.frequency.setTargetAtTime(500 + e.rpm * 5200 * load, t, 0.04);
+    if (e.loops) {
+      // real loops: assume `low` was recorded near idle and `high` near the redline
+      const x = e.rpm;
+      e.loops.low.g.gain.setTargetAtTime(Math.cos(x * Math.PI / 2) * 0.9, t, 0.05);
+      e.loops.high.g.gain.setTargetAtTime(Math.sin(x * Math.PI / 2) * 0.9, t, 0.05);
+      e.loops.low.src.playbackRate.setTargetAtTime(0.85 + x * 1.1, t, 0.05);
+      e.loops.high.src.playbackRate.setTargetAtTime(0.55 + x * 0.6, t, 0.05);
+    }
+  }
+  /** Mechanical clunk + short exhaust crack on an upshift. */
+  gearClunk(gear) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 700 + gear * 40; bp.Q.value = 2.5;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.25, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    src.connect(bp).connect(g).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + 0.1);
   }
 
   // ---------- soundtrack: lookahead step sequencer ----------

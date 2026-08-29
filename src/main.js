@@ -21,7 +21,7 @@ const input = new Input(canvas);
 const audio = new AudioEngine();
 // Which optional meme-pack files exist (empty when opened from disk / no server).
 const assetsAvailable = fetch('/api/assets', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
-  .then((a) => a && Array.isArray(a.clips) ? a : { clips: [], drivers: [] });
+  .then((a) => a && Array.isArray(a.clips) ? { engine: [], ...a } : { clips: [], drivers: [], engine: [] });
 audio.setAvailable(assetsAvailable);
 const renderer = new Renderer(canvas, assets);
 let career = Career.load();
@@ -329,7 +329,9 @@ function frame(now) {
     syncBoxButton();
     // audio follows the sim
     const ratio = clamp(world.speed / SPEED.max, 0, 1);
-    audio.updateEngine(dt, ratio, state === 'playing' && !world.pit.inLane || (state === 'playing' && world.pit.phase !== 'stop'));
+    const engineOn = state === 'playing' && !(world.pit.inLane && world.pit.phase === 'stop');
+    const throttleNorm = clamp((world.player.throttle - 0.72) / (1.22 - 0.72), 0, 1);
+    audio.updateEngine(dt, world.pit.inLane ? 0.04 : ratio, engineOn, world.pit.inLane ? 0.2 : throttleNorm, world.ers.boosting);
     audio.setMusicState(lerp(96, 172, world.intensity), clamp(world.intensity * 1.15 + (world.raining ? 0.1 : 0) + (world.sc.restartTimer > 0 ? 0.2 : 0) - (world.sc.active ? 0.3 : 0), 0, 1));
     audio.updateTow(state === 'playing' ? world.tow : 0);
   }
