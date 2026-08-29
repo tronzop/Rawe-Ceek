@@ -19,7 +19,8 @@ const MAX_BODY = 4096;
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.mp3': 'audio/mpeg', '.ico': 'image/x-icon',
-  '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json',
+  '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4', '.webp': 'image/webp', '.gif': 'image/gif', '.jpeg': 'image/jpeg',
 };
 
 function readScores() {
