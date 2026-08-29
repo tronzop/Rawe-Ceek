@@ -4,9 +4,9 @@
 import { STORAGE_KEYS } from './config.js';
 import { OPTIONAL_CLIPS, resolveClip } from './grid.js';
 import { engineState } from './logic.js';
-import { MARIACHI_GAIN, MARIACHI_STEPS, scheduleMariachi, setMariachiTempo } from './mariachi.js';
+import { ARRANGEMENTS, MARIACHI_GAIN, MARIACHI_TRACKS, scheduleMariachi, setMariachiTempo } from './mariachi.js';
 
-export const TRACKS = ['mariachi', 'synth'];
+export const TRACKS = [...MARIACHI_TRACKS, 'synth'];
 
 // The four meme clips that ship in assets/. The meme-pack clips (OPTIONAL_CLIPS)
 // are resolved at load time from whatever files exist in assets/clips/.
@@ -146,11 +146,16 @@ export class AudioEngine {
     if (this.musicBus) this.musicBus.gain.setTargetAtTime(this.musicOn ? 1 : 0, this.ctx.currentTime, 0.05);
     return this.musicOn;
   }
-  /** Cycles the soundtrack (mariachi ↔ synth); the sequencer picks it up on the next step. */
+  /** Cycles the soundtrack (mariachi → jarabe → synth); the sequencer picks it up on the next step. */
   toggleTrack() {
-    this.track = TRACKS[(TRACKS.indexOf(this.track) + 1) % TRACKS.length];
+    return this.setTrack(TRACKS[(TRACKS.indexOf(this.track) + 1) % TRACKS.length]);
+  }
+  /** Selects a soundtrack by name; unknown names are ignored. */
+  setTrack(name) {
+    if (!TRACKS.includes(name)) return this.track;
+    if (name !== this.track) this.seq.step = 0;
+    this.track = name;
     writePref(STORAGE_KEYS.track, this.track);
-    this.seq.step = 0;
     return this.track;
   }
   toggleSfx() {
@@ -448,14 +453,14 @@ export class AudioEngine {
       if (!this.seq.running) return;
       const lookahead = 0.12;
       while (this.seq.nextNoteTime < this.ctx.currentTime + lookahead) {
-        const mariachi = this.track === 'mariachi';
-        // the mariachi band plays a touch quicker than the synth for the same race pace
-        const bpm = mariachi ? this.seq.bpm * 1.12 : this.seq.bpm;
-        if (mariachi) { setMariachiTempo(bpm); scheduleMariachi(this, this.seq.step, this.seq.nextNoteTime, this.seq.intensity); }
+        const arr = ARRANGEMENTS[this.track];
+        // the bands play quicker than the synth for the same race pace (each arrangement sets how much)
+        const bpm = arr ? this.seq.bpm * arr.tempo : this.seq.bpm;
+        if (arr) { setMariachiTempo(bpm); scheduleMariachi(this, this.seq.step, this.seq.nextNoteTime, this.seq.intensity, arr); }
         else this.scheduleStep(this.seq.step, this.seq.nextNoteTime);
         const secondsPerBeat = 60 / bpm;
         this.seq.nextNoteTime += secondsPerBeat / 4; // 16th notes
-        this.seq.step = (this.seq.step + 1) % (mariachi ? MARIACHI_STEPS : 64);
+        this.seq.step = (this.seq.step + 1) % (arr ? arr.steps : 64);
       }
       this.seq.timer = setTimeout(tick, 30);
     };

@@ -272,3 +272,17 @@ test('engine model: gears climb with speed, rpm saws through the range, V12 fire
   assert.ok(Math.abs(s.firingHz - (s.rpm / 60) * 6) < 1e-9);
   assert.ok(engineState(1).firingHz > 1000 && engineState(0).firingHz > 300);
 });
+
+test('mariachi arrangements are well-formed', async () => {
+  const { ARRANGEMENTS, MARIACHI_TRACKS } = await import('../src/mariachi.js');
+  assert.deepEqual(MARIACHI_TRACKS, ['mariachi', 'jarabe']);
+  for (const [id, arr] of Object.entries(ARRANGEMENTS)) {
+    assert.equal(arr.lead.length, arr.steps, `${id}: steps match lead length`);
+    assert.equal(arr.steps % arr.perBar, 0, `${id}: whole bars`);
+    assert.equal(arr.steps / arr.perBar, 16, `${id}: 16-bar loop`);
+    assert.ok(arr.tempo > 1, `${id}: quicker than the synth`);
+    for (const n of arr.lead) assert.ok(n === null || n === '-' || (Number.isInteger(n) && n >= -7 && n <= 21), `${id}: bad lead entry ${n}`);
+    assert.notEqual(arr.lead[0], '-', `${id}: loop does not start on a hold`);
+  }
+  assert.ok(ARRANGEMENTS.jarabe.tempo > ARRANGEMENTS.mariachi.tempo, 'jarabe is jauntier');
+});

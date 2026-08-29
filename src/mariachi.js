@@ -3,12 +3,13 @@
 // for this game (it is not the F1 broadcast theme, which is copyrighted). Everything
 // is synthesised with WebAudio; tempo and layers follow the race intensity.
 //
-// Time: 2/4 son-style feel written in 16ths: 8 steps per bar, 16 bars per loop = 128 steps.
+// Two arrangements share the band:
+//   mariachi — "Rawe Ceek Mariachi": 2/4 son feel in D major, 8 sixteenth steps per bar, 16 bars = 128 steps.
+//   jarabe   — "Jarabe Rawe": a jauntier 6/8 huapango in G major, 12 sixteenth steps per bar, 16 bars = 192 steps,
+//              faster, staccato trumpets, hemiola bass (3 against 2), strums on every off-beat and more gritos.
 
-const D = 293.66; // D4 — the key is D major
-const semi = (n) => D * Math.pow(2, n / 12);
-// scale degrees in semitones (D major), octave-agnostic helper
-const deg = (d, oct = 0) => semi([0, 2, 4, 5, 7, 9, 11][((d % 7) + 7) % 7] + 12 * (Math.floor(d / 7) + oct));
+// scale degrees (major) in semitones above the arrangement's tonic, octave-agnostic helper
+const degIn = (tonic, d, oct = 0) => tonic * Math.pow(2, ([0, 2, 4, 5, 7, 9, 11][((d % 7) + 7) % 7] + 12 * (Math.floor(d / 7) + oct)) / 12);
 
 // Chord progression, one chord per bar (I  I  IV  V | I  V  IV  I | vi IV  V  V | I  IV  V  I)
 const CHORDS = [
@@ -42,14 +43,62 @@ const HARMONY_ON = (bar) => bar >= 4;
 // Vihuela strums on the off-beats ("and" of 1 and 2), plus a pickup every other bar
 const STRUM_STEPS = [2, 3, 6, 7];
 
+// ---------- "Jarabe Rawe" — 6/8, G major, 12 steps per bar ----------
+// Progression: I IV V I | I IV V V | vi IV V I | IV I V I  (bright, resolves every four bars)
+const J_CHORDS = [
+  [0, 2, 4], [3, 5, 7], [4, 6, 8], [0, 2, 4],
+  [0, 2, 4], [3, 5, 7], [4, 6, 8], [4, 6, 8],
+  [5, 7, 9], [3, 5, 7], [4, 6, 8], [0, 2, 4],
+  [3, 5, 7], [0, 2, 4], [4, 6, 8], [0, 2, 4],
+];
+const J_BASS = J_CHORDS.map((c) => [c[0], c[0] + 4]);
+// Lead in eighths (every other 16th) with skipping sixteenth turns; 12 entries per bar.
+const J_LEAD = [
+  // A: skipping call (bars 1-4)
+  0, '-', 2, '-', 4, '-', 7, '-', 4, '-', 2, '-',
+  3, '-', 5, '-', 7, '-', 9, '-', 7, '-', 5, '-',
+  4, '-', 6, '-', 8, '-', 11, '-', 8, 6, 4, '-',
+  7, '-', '-', '-', 4, '-', 0, '-', '-', '-', null, null,
+  // A': same shape, lands on the dominant and hangs there (bars 5-8)
+  0, '-', 2, '-', 4, '-', 7, '-', 9, '-', 7, '-',
+  5, '-', 7, '-', 9, '-', 10, '-', 9, '-', 7, '-',
+  8, '-', 9, '-', 11, '-', 13, '-', 11, 9, 8, '-',
+  11, '-', '-', '-', 8, '-', 4, '-', '-', '-', 4, 6,
+  // B: up the hill (bars 9-12)
+  7, '-', 9, '-', 12, '-', 14, '-', 12, '-', 9, '-',
+  10, '-', 12, '-', 14, '-', 12, '-', 10, '-', 7, '-',
+  8, '-', 11, '-', 13, '-', 15, '-', 13, 11, 8, '-',
+  14, '-', '-', '-', 11, '-', 7, '-', '-', '-', null, null,
+  // B': tumble home, big cadence (bars 13-16)
+  10, '-', 9, '-', 7, '-', 9, '-', 7, '-', 5, '-',
+  4, '-', 7, '-', 9, '-', 11, '-', 9, '-', 7, '-',
+  8, '-', 6, '-', 4, '-', 8, '-', 11, '-', 13, '-',
+  14, '-', '-', '-', '-', '-', 7, '-', 0, '-', null, null,
+];
+
 /**
- * Schedules everything that sounds on `step` (0..127) at time `t`.
+ * Arrangement table. `steps` per loop, `perBar`, `tempo` multiplier on the race bpm,
+ * `schedule(a, out, bar, sb, step, t, i)` fires everything for one step.
+ */
+export const ARRANGEMENTS = {
+  mariachi: { name: 'Rawe Ceek Mariachi', tonic: 293.66 /* D4 */, perBar: 8, steps: LEAD.length, tempo: 1.12, lead: LEAD },
+  jarabe: { name: 'Jarabe Rawe', tonic: 392.0 /* G4 */, perBar: 12, steps: J_LEAD.length, tempo: 1.35, lead: J_LEAD, staccato: true },
+};
+export const MARIACHI_TRACKS = Object.keys(ARRANGEMENTS);
+
+/**
+ * Schedules everything that sounds on `step` at time `t` for arrangement `arr` (default: mariachi).
  * `a` is the AudioEngine (for ctx, musicBus, noise buffer); `i` is intensity 0..1.
  */
-export function scheduleMariachi(a, step, t, i) {
-  const ctx = a.ctx;
+export function scheduleMariachi(a, step, t, i, arr = ARRANGEMENTS.mariachi) {
   // the band has its own bus so the mix sits under the engine and radio (see AudioEngine.init)
   const out = a.mariachiBus || a.musicBus;
+  currentArr = arr;
+  (arr === ARRANGEMENTS.jarabe ? scheduleJarabe : scheduleSon)(a.ctx, a, out, step, t, i, arr);
+}
+
+function scheduleSon(ctx, a, out, step, t, i, arr) {
+  const deg = (d, oct = 0) => degIn(arr.tonic, d, oct);
   const bar = Math.floor(step / 8);
   const s8 = step % 8;
   const chord = CHORDS[bar];
@@ -77,20 +126,55 @@ export function scheduleMariachi(a, step, t, i) {
   // grito! a whooping falsetto slide at the top of the climb, only when flat out
   if (i > 0.8 && step === 88) grito(ctx, out, t);
 }
+
+function scheduleJarabe(ctx, a, out, step, t, i, arr) {
+  const deg = (d, oct = 0) => degIn(arr.tonic, d, oct);
+  const bar = Math.floor(step / 12);
+  const s12 = step % 12;
+  const chord = J_CHORDS[bar];
+  const hemiola = bar % 2 === 1; // odd bars feel like 3/4: bass on the three quarter notes
+
+  // guitarrón: even bars two dotted quarters (1 and 4), odd bars three quarters (1, 3, 5) — the sesquiáltera
+  if (!hemiola && (s12 === 0 || s12 === 6)) guitarron(ctx, out, deg(J_BASS[bar][s12 === 0 ? 0 : 1], -2), t, 0.55 + 0.2 * i);
+  if (hemiola && s12 % 4 === 0) guitarron(ctx, out, deg(J_BASS[bar][s12 === 4 ? 1 : 0], -2), t, 0.5 + 0.2 * i);
+  // walking pickup into the next bar when pushing
+  if (i > 0.5 && s12 === 10) guitarron(ctx, out, deg(J_BASS[bar][0] + 1, -2), t, 0.28);
+
+  // vihuela: every off-beat eighth (2, 3, 5, 6 of the six), alternating up/down, a rasgueado on the downbeat every 4th bar
+  if ([2, 4, 8, 10].includes(s12)) strum(ctx, out, chord.map((d) => deg(d, 0)), t, s12 === 4 || s12 === 10 ? 0.17 : 0.12, s12 % 8 === 4);
+  if (bar % 4 === 3 && s12 === 0) strum(ctx, out, chord.map((d) => deg(d, 0)), t, 0.2, true);
+
+  // percussion: güiro on the dotted quarters, shaker straight eighths, cajón slaps on 4 and 6 when lively
+  if (s12 === 0 || s12 === 6) guiro(ctx, out, a.noise, t, 0.13);
+  if (i > 0.25 && s12 % 2 === 0) shaker(ctx, out, a.noise, t, 0.05 + 0.06 * i);
+  if (i > 0.55 && (s12 === 6 || s12 === 10)) cajon(ctx, out, t, s12 === 6 ? 0.36 : 0.22);
+
+  // trumpets: short and bright; harmony a third below from the second phrase on, or once the race is on
+  const n = J_LEAD[step];
+  if (typeof n === 'number') {
+    const len = noteLength(step);
+    trumpet(ctx, out, deg(n, 1), t, len, 0.15 + 0.08 * i, false);
+    if ((bar >= 4 || i > 0.5) && i > 0.2) trumpet(ctx, out, deg(n - 2, 1), t, len, 0.09 + 0.05 * i, true);
+  }
+  // gritos at the end of every phrase once the race is moving, always at the top of the hill
+  if ((i > 0.55 && (step === 46 || step === 190)) || (i > 0.35 && step === 142)) grito(ctx, out, t);
+}
 /** Level the band sits at relative to the music bus. */
 export const MARIACHI_GAIN = 0.42;
 
 /** How many 16ths a lead note holds (counts the following '-' steps). */
 function noteLength(step) {
+  const lead = currentArr.lead;
   let k = 1;
-  while (LEAD[(step + k) % LEAD.length] === '-' && k < 8) k++;
+  while (lead[(step + k) % lead.length] === '-' && k < 8) k++;
   return k;
 }
 
 /** Trumpet: bright saw + square with vibrato, brassy formant, quick attack, tail. */
 function trumpet(ctx, out, freq, t, steps16, vel, second) {
   const stepSec = 60 / (currentBpm || 120) / 4;
-  const dur = Math.max(0.12, steps16 * stepSec * 0.9);
+  // staccato arrangements clip every note short so the tune skips rather than sings
+  const dur = Math.max(0.1, steps16 * stepSec * (currentArr.staccato ? 0.62 : 0.9));
   const o1 = ctx.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = freq;
   const o2 = ctx.createOscillator(); o2.type = 'square'; o2.frequency.value = freq * (second ? 1.003 : 0.997);
   const vib = ctx.createOscillator(); vib.frequency.value = 5.5;
@@ -179,6 +263,7 @@ function grito(ctx, out, t) {
 }
 
 let currentBpm = 120;
+let currentArr = ARRANGEMENTS.mariachi;
 /** The sequencer tells us the tempo so note lengths are right. */
 export function setMariachiTempo(bpm) { currentBpm = bpm; }
-export const MARIACHI_STEPS = LEAD.length; // 128
+export const MARIACHI_STEPS = LEAD.length; // 128 (the original arrangement; see ARRANGEMENTS[x].steps)

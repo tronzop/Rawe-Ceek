@@ -3,7 +3,7 @@ import { COMPOUNDS, COMPOUND_ORDER, GP, SPEED, VENUES, WORLD } from './config.js
 import { Input } from './input.js';
 import { World } from './world.js';
 import { Renderer } from './render.js';
-import { AudioEngine } from './audio.js';
+import { AudioEngine, TRACKS } from './audio.js';
 import { radioLine } from './radio.js';
 import { Leaderboard } from './leaderboard.js';
 import { Career, TROPHIES } from './career.js';
@@ -260,13 +260,16 @@ $('#restartBtn').addEventListener('click', startGame);
 $('#playAgainBtn').addEventListener('click', startGame);
 for (const btn of document.querySelectorAll('[data-music]')) btn.addEventListener('click', () => { audio.init(); hud.musicOn = audio.toggleMusic(); syncToggles(); });
 for (const btn of document.querySelectorAll('[data-sfx]')) btn.addEventListener('click', () => { audio.init(); audio.toggleSfx(); syncToggles(); });
-const TRACK_LABEL = { mariachi: '🎺 Mariachi', synth: '🎹 Synth' };
-for (const btn of document.querySelectorAll('[data-track]')) btn.addEventListener('click', () => { audio.init(); audio.toggleTrack(); syncToggles(); });
+const TRACK_LABEL = { mariachi: '🎺 Mariachi', jarabe: '💃 Jarabe', synth: '🎹 Synth' };
+for (const sel of document.querySelectorAll('[data-track]')) {
+  sel.innerHTML = TRACKS.map((t) => `<option value="${t}">${TRACK_LABEL[t]}</option>`).join('');
+  sel.addEventListener('change', () => { audio.init(); audio.setTrack(sel.value); syncToggles(); });
+}
 input.on('track', () => { audio.init(); audio.toggleTrack(); syncToggles(); toast(TRACK_LABEL[audio.track].toUpperCase(), '#ffd400', 'soundtrack'); });
 function syncToggles() {
   for (const b of document.querySelectorAll('[data-music]')) b.textContent = `Music: ${audio.musicOn ? 'on' : 'off'}`;
   for (const b of document.querySelectorAll('[data-sfx]')) b.textContent = `SFX: ${audio.sfxOn ? 'on' : 'off'}`;
-  for (const b of document.querySelectorAll('[data-track]')) b.textContent = `Soundtrack: ${TRACK_LABEL[audio.track]}`;
+  for (const s of document.querySelectorAll('[data-track]')) s.value = audio.track;
 }
 syncToggles();
 $('#titleBest').textContent = hud.best ? `Personal best: ${hud.best}` : '';
