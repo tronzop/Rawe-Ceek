@@ -78,3 +78,15 @@ docker compose up -d --build      # game on http://localhost:3732, scores persis
 ## Tuning
 
 Everything that changes how the game feels — speeds, wear rates, pit timing, rain frequency, hazard weights, the venue calendar, safety-car odds, slipstream strength — is in `src/config.js`. `npm test` checks the maths in `src/logic.js` still holds after you fiddle.
+
+## Unraid / auto-updating container
+
+Every push to `main` runs the tests and publishes `ghcr.io/tronzop/rawe-ceek:latest`. On the Unraid box:
+
+```sh
+mkdir -p /mnt/user/appdata/rawe-ceek && cd /mnt/user/appdata/rawe-ceek
+curl -fsSLO https://raw.githubusercontent.com/tronzop/Rawe-Ceek/main/deploy/unraid/docker-compose.yaml
+docker compose up -d
+```
+
+That starts the game on port 3732 plus a Watchtower sidecar that checks GHCR every 5 minutes and swaps in new images automatically. Scores persist in `appdata/rawe-ceek/data`; drop meme-pack files into `appdata/rawe-ceek/assets/clips` and `assets/drivers`.

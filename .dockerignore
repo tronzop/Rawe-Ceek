@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+test
+server/leaderboard.json
+*.md
+!assets/README.md
+.prettierrc
+docker-compose*.yaml
+Dockerfile
+.dockerignore

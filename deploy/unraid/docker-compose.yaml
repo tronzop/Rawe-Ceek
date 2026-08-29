@@ -1,0 +1,40 @@
+# Rawe Ceek on Unraid, pulled from GHCR and kept current by Watchtower.
+#
+#   ssh root@192.168.1.100
+#   mkdir -p /mnt/user/appdata/rawe-ceek && cd /mnt/user/appdata/rawe-ceek
+#   curl -fsSLO https://raw.githubusercontent.com/tronzop/Rawe-Ceek/main/deploy/unraid/docker-compose.yaml
+#   docker compose up -d
+#
+# Every push to main builds ghcr.io/tronzop/rawe-ceek:latest; Watchtower checks
+# every 5 minutes and swaps the container in place when the image changes.
+# Scores live in /mnt/user/appdata/rawe-ceek/data and survive updates.
+# Drop meme-pack files into /mnt/user/appdata/rawe-ceek/assets/{clips,drivers}.
+
+services:
+  rawe-ceek:
+    image: ghcr.io/tronzop/rawe-ceek:latest
+    container_name: rawe-ceek
+    ports:
+      - "3732:8080"
+    environment:
+      - PORT=8080
+      - LEADERBOARD_FILE=/data/leaderboard.json
+      - TZ=America/New_York
+    volumes:
+      - /mnt/user/appdata/rawe-ceek/data:/data
+      - /mnt/user/appdata/rawe-ceek/assets/clips:/app/assets/clips
+      - /mnt/user/appdata/rawe-ceek/assets/drivers:/app/assets/drivers
+    restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - net.unraid.docker.webui=http://[IP]:[PORT:3732]/
+      - net.unraid.docker.icon=https://raw.githubusercontent.com/tronzop/Rawe-Ceek/main/assets/favicon.png
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: rawe-ceek-watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # only touch containers that opt in with the label above
+    command: --label-enable --cleanup --interval 300
+    restart: unless-stopped
