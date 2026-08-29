@@ -76,8 +76,8 @@ function serveStatic(req, res) {
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Content-Length': st.size,
-      // code revalidates on every load (no stale game after a deploy); media may be cached
-      'Cache-Control': ['.html', '.js', '.css'].includes(ext) ? 'no-cache' : 'public, max-age=3600',
+      // code is never cached (no-store also stops CDNs like Cloudflare overriding it); media may be cached
+      'Cache-Control': ['.html', '.js', '.css'].includes(ext) ? 'no-store' : 'public, max-age=3600',
       'Last-Modified': st.mtime.toUTCString(),
     });
     fs.createReadStream(file).pipe(res);
