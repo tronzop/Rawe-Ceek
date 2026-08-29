@@ -116,6 +116,7 @@ export const STORAGE_KEYS = {
   name: 'rawe-ceek:name',
   music: 'rawe-ceek:music',
   sfx: 'rawe-ceek:sfx',
+  track: 'rawe-ceek:track',
 };
 
 // ---------------------------------------------------------------------------

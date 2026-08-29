@@ -231,9 +231,13 @@ $('#restartBtn').addEventListener('click', startGame);
 $('#playAgainBtn').addEventListener('click', startGame);
 for (const btn of document.querySelectorAll('[data-music]')) btn.addEventListener('click', () => { audio.init(); hud.musicOn = audio.toggleMusic(); syncToggles(); });
 for (const btn of document.querySelectorAll('[data-sfx]')) btn.addEventListener('click', () => { audio.init(); audio.toggleSfx(); syncToggles(); });
+const TRACK_LABEL = { mariachi: '🎺 Mariachi', synth: '🎹 Synth' };
+for (const btn of document.querySelectorAll('[data-track]')) btn.addEventListener('click', () => { audio.init(); audio.toggleTrack(); syncToggles(); });
+input.on('track', () => { audio.init(); audio.toggleTrack(); syncToggles(); toast(TRACK_LABEL[audio.track].toUpperCase(), '#ffd400', 'soundtrack'); });
 function syncToggles() {
   for (const b of document.querySelectorAll('[data-music]')) b.textContent = `Music: ${audio.musicOn ? 'on' : 'off'}`;
   for (const b of document.querySelectorAll('[data-sfx]')) b.textContent = `SFX: ${audio.sfxOn ? 'on' : 'off'}`;
+  for (const b of document.querySelectorAll('[data-track]')) b.textContent = `Soundtrack: ${TRACK_LABEL[audio.track]}`;
 }
 syncToggles();
 $('#titleBest').textContent = hud.best ? `Personal best: ${hud.best}` : '';

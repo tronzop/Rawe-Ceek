@@ -22,7 +22,7 @@ Or open `index.html` straight from disk — everything works offline except the 
 | `Space` / `Shift` | ERS boost (drains the battery; DRS gates refill it) |
 | `1`–`5` / `Tab` | Choose the compound for your next stop (Soft / Medium / Hard / Inter / Wet) |
 | `B` / **BOX BOX** button | Box this lap — the car steers itself into the pits when the window is open (steering `▲` into the green gap still works) |
-| `P` / `Esc` | Pause · `R` restart · `M` music · `N` sound effects |
+| `P` / `Esc` | Pause · `R` restart · `M` music · `N` sound effects · `T` switch soundtrack |
 | Touch / mouse | Drag to steer; press on the right quarter of the screen to boost |
 
 ### How it works
@@ -45,7 +45,7 @@ Or open `index.html` straight from disk — everything works offline except the 
 
 ### Sounds
 
-The four meme clips in `assets/` are used as they were intended: *pushing like an animal* when you push, the scream on a close call, *so not right* on oil / a botched pit stop, and the game-over clip on retirement. Everything else — engine, gear shifts, wheel guns, and the soundtrack whose tempo follows your speed — is synthesised live with WebAudio. Music and SFX toggles are remembered.
+The four meme clips in `assets/` are used as they were intended: *pushing like an animal* when you push, the scream on a close call, *so not right* on oil / a botched pit stop, and the game-over clip on retirement. Everything else is synthesised live with WebAudio: the procedural V12 engine, gear shifts, wheel guns, and two soundtracks whose tempo and layers follow your speed — **Rawe Ceek Mariachi** (default: an original mariachi piece in the spirit of the Mexican GP celebrations — twin trumpets in thirds, guitarrón, vihuela strums, güiro and shaker, and a grito when you are flat out; it is not the broadcast theme, which is copyrighted) and the original **Synth** track. Press `T` or use the Soundtrack button. Music, SFX and soundtrack choices are remembered.
 
 ## Project layout
 
@@ -60,6 +60,7 @@ src/
   audio.js          samples, synth soundtrack, engine drone
   input.js          keyboard + pointer
   radio.js          pit-wall lines
+  mariachi.js       the mariachi soundtrack: sequencer data + trumpet/guitarrón/vihuela synths
   career.js         persistent career stats + trophy definitions (tested)
   leaderboard.js    localStorage + server API client
   style.css

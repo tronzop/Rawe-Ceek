@@ -28,6 +28,7 @@ export class Input {
         case 'KeyR': this.emit('restart'); break;
         case 'KeyM': this.emit('music'); break;
         case 'KeyB': this.emit('pit'); break;
+        case 'KeyT': this.emit('track'); break;
         case 'KeyN': this.emit('sfx'); break;
         case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5':
           this.emit('compound', Number(e.code.slice(-1)) - 1); break;

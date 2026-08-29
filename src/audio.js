@@ -4,6 +4,9 @@
 import { STORAGE_KEYS } from './config.js';
 import { OPTIONAL_CLIPS, resolveClip } from './grid.js';
 import { engineState } from './logic.js';
+import { MARIACHI_GAIN, MARIACHI_STEPS, scheduleMariachi, setMariachiTempo } from './mariachi.js';
+
+export const TRACKS = ['mariachi', 'synth'];
 
 // The four meme clips that ship in assets/. The meme-pack clips (OPTIONAL_CLIPS)
 // are resolved at load time from whatever files exist in assets/clips/.
@@ -60,6 +63,7 @@ export class AudioEngine {
     this.channelBusy = false; // a sample clip is currently playing
     this.queue = []; // clips waiting for the channel
     this.musicOn = readPref(STORAGE_KEYS.music, true);
+    this.track = TRACKS.includes(readPref(STORAGE_KEYS.track, 'mariachi')) ? readPref(STORAGE_KEYS.track, 'mariachi') : 'mariachi';
     this.sfxOn = readPref(STORAGE_KEYS.sfx, true);
     this.lastPlayed = {};
     // sequencer
@@ -86,6 +90,9 @@ export class AudioEngine {
     this.musicBus = this.ctx.createGain();
     this.musicBus.gain.value = this.musicOn ? 1 : 0;
     this.musicBus.connect(this.master);
+    this.mariachiBus = this.ctx.createGain();
+    this.mariachiBus.gain.value = MARIACHI_GAIN;
+    this.mariachiBus.connect(this.musicBus);
     this.sfxBus = this.ctx.createGain();
     this.sfxBus.gain.value = this.sfxOn ? 1 : 0;
     this.sfxBus.connect(this.master);
@@ -108,7 +115,7 @@ export class AudioEngine {
     const wanted = Object.entries(SFX_FILES);
     for (const id of Object.keys(OPTIONAL_CLIPS)) {
       // with a server we know exactly which files exist; without one, try the shipped .wav
-      const file = av ? resolveClip(id, av.clips || []) : `${id}.wav`;
+      const file = av ? resolveClip(id, av.clips || []) : id === 'thunder' ? null : `${id}.wav`;
       if (file) wanted.push([id, `assets/clips/${file}`]);
     }
     await Promise.all(
@@ -138,6 +145,13 @@ export class AudioEngine {
     writePref(STORAGE_KEYS.music, this.musicOn);
     if (this.musicBus) this.musicBus.gain.setTargetAtTime(this.musicOn ? 1 : 0, this.ctx.currentTime, 0.05);
     return this.musicOn;
+  }
+  /** Cycles the soundtrack (mariachi ↔ synth); the sequencer picks it up on the next step. */
+  toggleTrack() {
+    this.track = TRACKS[(TRACKS.indexOf(this.track) + 1) % TRACKS.length];
+    writePref(STORAGE_KEYS.track, this.track);
+    this.seq.step = 0;
+    return this.track;
   }
   toggleSfx() {
     this.sfxOn = !this.sfxOn;
@@ -434,10 +448,14 @@ export class AudioEngine {
       if (!this.seq.running) return;
       const lookahead = 0.12;
       while (this.seq.nextNoteTime < this.ctx.currentTime + lookahead) {
-        this.scheduleStep(this.seq.step, this.seq.nextNoteTime);
-        const secondsPerBeat = 60 / this.seq.bpm;
+        const mariachi = this.track === 'mariachi';
+        // the mariachi band plays a touch quicker than the synth for the same race pace
+        const bpm = mariachi ? this.seq.bpm * 1.12 : this.seq.bpm;
+        if (mariachi) { setMariachiTempo(bpm); scheduleMariachi(this, this.seq.step, this.seq.nextNoteTime, this.seq.intensity); }
+        else this.scheduleStep(this.seq.step, this.seq.nextNoteTime);
+        const secondsPerBeat = 60 / bpm;
         this.seq.nextNoteTime += secondsPerBeat / 4; // 16th notes
-        this.seq.step = (this.seq.step + 1) % 64;
+        this.seq.step = (this.seq.step + 1) % (mariachi ? MARIACHI_STEPS : 64);
       }
       this.seq.timer = setTimeout(tick, 30);
     };
