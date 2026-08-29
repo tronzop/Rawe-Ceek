@@ -70,6 +70,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   transition: opacity 1.6s ease, transform 12s ease-out;
 }
 .over.revealed #sadGreg { opacity: 1; transform: scale(1.06) rotate(0deg); }
+.over.newbest #overTitle, .over.newbest .final span { color: var(--yellow); }
+.over.newbest #sadGreg { box-shadow: 0 20px 60px rgba(0,0,0,0.7), 0 0 0 3px var(--yellow); }
 .result { max-width: 440px; }
 .final { display: flex; align-items: baseline; gap: 8px; margin: 6px 0 12px; }
 .final span { font: 900 64px var(--mono); color: var(--yellow); letter-spacing: -0.02em; }

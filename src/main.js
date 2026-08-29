@@ -17,6 +17,20 @@ const screens = { title: $('#titleScreen'), pause: $('#pauseScreen'), over: $('#
 const assets = { sheet: new Image(), frames: 8 };
 assets.sheet.src = 'assets/ferrari_sheet.png';
 
+// Retirement-screen pictures: a celebration when the run is a new personal best, a crash otherwise.
+const PORTRAITS = {
+  celebrate: [
+    { src: 'assets/celebrate_seb_bow.jpg', alt: 'Vettel kneeling and bowing to his car after a win' },
+    { src: 'assets/celebrate_alonso_fly.jpg', alt: 'Alonso leaping off his Renault in celebration' },
+    { src: 'assets/celebrate_seb_p2.jpg', alt: 'Vettel swapping the P1 and P2 boards in parc fermé' },
+  ],
+  crash: [
+    { src: 'assets/retire_max_kick.jpg', alt: 'Verstappen kicking his blown rear tyre' },
+    { src: 'assets/sadgreg.png', alt: 'A very sad Ferrari driver sitting in the grass' },
+  ],
+};
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
 const input = new Input(canvas);
 const audio = new AudioEngine();
 // Which optional meme-pack files exist (empty when opened from disk / no server).
@@ -78,15 +92,30 @@ function gameOver(payload = {}) {
   audio.stopMusic();
   audio.crashNoise();
   setTimeout(() => audio.playAny([Math.random() < 0.5 ? 'nomichaelno' : null, 'gameover'], { volume: 1 }), 250);
-  // portrait: the driver you hit if we have their picture, else sad Greg
+  const previousBest = Leaderboard.best();
+  hud.best = Leaderboard.recordBest(world.score);
+  const newBest = world.score > previousBest && previousBest > 0;
+  // portrait: a celebration on a new personal best; otherwise the driver you hit if we have their picture, else a crash picture
   const img = $('#sadGreg');
   assetsAvailable.then((a) => {
+    if (newBest) {
+      const p = pick(PORTRAITS.celebrate);
+      img.src = p.src; img.alt = p.alt;
+      return;
+    }
     const id = payload.driver ? payload.driver.id : 'you';
     const file = a.drivers.find((f) => f.replace(/\.[^.]+$/, '') === id);
-    img.src = file ? `assets/drivers/${file}` : 'assets/sadgreg.png';
-    img.alt = file && payload.driver ? `${payload.driver.name} after you drove into them` : 'A very sad Ferrari driver sitting in the grass';
+    if (file) {
+      img.src = `assets/drivers/${file}`;
+      img.alt = payload.driver ? `${payload.driver.name} after you drove into them` : 'You, after the tyre wall';
+    } else {
+      const p = pick(PORTRAITS.crash);
+      img.src = p.src; img.alt = p.alt;
+    }
   });
-  hud.best = Leaderboard.recordBest(world.score);
+  $('#overKicker').textContent = newBest ? 'Simply lovely' : 'We are checking';
+  $('#overTitle').textContent = newBest ? 'New personal best!' : 'Retired';
+  screens.over.classList.toggle('newbest', newBest);
   // career + trophies
   const result = Career.record(world.run, GP.points);
   career = result.career;
