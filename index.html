@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0d12" />
+    <title>Rawe Ceek</title>
+    <link rel="icon" href="assets/favicon.png" />
+    <link rel="stylesheet" href="src/style.css" />
+  </head>
+  <body>
+    <canvas id="game" aria-label="Rawe Ceek race"></canvas>
+
+    <!-- Title -->
+    <section id="titleScreen" class="screen">
+      <div class="panel title">
+        <p class="kicker">Ferrari fan survival racer</p>
+        <h1>RAWE<span>CEEK</span></h1>
+        <p class="tagline">Survive the race. Manage the tyres. Trust the strategy. (Don't.)</p>
+        <button id="startBtn" class="primary">Lights out — press Enter</button>
+        <p id="titleBest" class="best"></p>
+        <div class="controls">
+          <div><kbd>▲</kbd><kbd>▼</kbd> steer</div>
+          <div><kbd>▶</kbd> push <kbd>◀</kbd> lift</div>
+          <div><kbd>Space</kbd> ERS boost</div>
+          <div><kbd>1</kbd>–<kbd>5</kbd> next tyre</div>
+          <div><kbd>▲</kbd> into the green gap to pit</div>
+          <div><kbd>P</kbd> pause <kbd>M</kbd> music</div>
+        </div>
+        <div class="row">
+          <button data-music>Music: on</button>
+          <button data-sfx>SFX: on</button>
+        </div>
+        <details class="rules">
+          <summary>How it works</summary>
+          <ul>
+            <li>Hit a tyre or another car and it's over. Oil spins you, debris damages the front wing.</li>
+            <li>Tyres wear faster the harder you push. Past ~65% wear grip falls off a cliff; at 100% you puncture.</li>
+            <li>Softs are quick and short-lived, hards are slow and last. Inters and wets only work in the rain.</li>
+            <li>A pit window opens every ~26 s. Steer up into the green gap to box; pick the compound with 1–5 first.</li>
+            <li>Sometimes the wheel gun jams. This is Ferrari.</li>
+            <li>Score = metres travelled + 60 per overtake + 25 per close call.</li>
+          </ul>
+        </details>
+      </div>
+      <aside class="panel board">
+        <h2>Leaderboard <small id="leaderboardSource"></small></h2>
+        <ol id="leaderboardList"></ol>
+      </aside>
+    </section>
+
+    <!-- Pause -->
+    <section id="pauseScreen" class="screen" hidden>
+      <div class="panel small">
+        <h2>Red flag</h2>
+        <p>Race suspended.</p>
+        <div class="row">
+          <button id="resumeBtn" class="primary">Resume (P)</button>
+          <button id="restartBtn">Restart (R)</button>
+        </div>
+        <div class="row">
+          <button data-music>Music: on</button>
+          <button data-sfx>SFX: on</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Game over -->
+    <section id="gameOverScreen" class="screen over" hidden>
+      <img id="sadGreg" src="assets/sadgreg.png" alt="A very sad Ferrari driver sitting in the grass" />
+      <div class="panel result">
+        <p class="kicker">We are checking</p>
+        <h2>Retired</h2>
+        <div class="final"><span id="finalScore">0</span><small>points</small></div>
+        <div id="finalStats" class="stats"></div>
+        <form id="scoreForm" class="row" autocomplete="off">
+          <input id="nameInput" maxlength="16" placeholder="Driver name" aria-label="Driver name" />
+          <button id="submitScore" type="submit">Submit</button>
+        </form>
+        <p id="submitStatus" class="status"></p>
+        <div class="row">
+          <button id="playAgainBtn" class="primary">Rawe again (Enter / R)</button>
+        </div>
+      </div>
+    </section>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

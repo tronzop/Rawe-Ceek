@@ -1,0 +1,370 @@
+// Audio: sample SFX (the meme clips), a procedural synth soundtrack driven by
+// the game's intensity, and an engine drone whose pitch follows the speedo.
+// Everything is created lazily on the first user gesture (browser autoplay rules).
+import { STORAGE_KEYS } from './config.js';
+
+const SFX_FILES = {
+  gameover: 'assets/gameover.mp3',
+  scream: 'assets/scream.mp3',
+  pushing: 'assets/pushinglikeananimal.mp3',
+  sonotright: 'assets/sonotright.mp3',
+};
+
+const readPref = (key, fallback) => {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : JSON.parse(v);
+  } catch {
+    return fallback;
+  }
+};
+const writePref = (key, v) => {
+  try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ }
+};
+
+export class AudioEngine {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.musicBus = null;
+    this.sfxBus = null;
+    this.buffers = {};
+    this.musicOn = readPref(STORAGE_KEYS.music, true);
+    this.sfxOn = readPref(STORAGE_KEYS.sfx, true);
+    this.lastPlayed = {};
+    // sequencer
+    this.seq = { running: false, nextNoteTime: 0, step: 0, bpm: 100, intensity: 0, timer: null };
+    this.engine = null;
+    this.noise = null;
+  }
+
+  /** Must be called from a user gesture. Safe to call repeatedly. */
+  init() {
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = 0.9;
+    const comp = this.ctx.createDynamicsCompressor();
+    comp.threshold.value = -12;
+    comp.ratio.value = 4;
+    this.master.connect(comp).connect(this.ctx.destination);
+    this.musicBus = this.ctx.createGain();
+    this.musicBus.gain.value = this.musicOn ? 1 : 0;
+    this.musicBus.connect(this.master);
+    this.sfxBus = this.ctx.createGain();
+    this.sfxBus.gain.value = this.sfxOn ? 1 : 0;
+    this.sfxBus.connect(this.master);
+    this.noise = this.makeNoise();
+    this.loadAll();
+    this.createEngine();
+  }
+
+  get ready() { return !!this.ctx; }
+
+  async loadAll() {
+    await Promise.all(
+      Object.entries(SFX_FILES).map(async ([name, url]) => {
+        try {
+          const res = await fetch(url);
+          if (!res.ok) return;
+          const ab = await res.arrayBuffer();
+          this.buffers[name] = await this.ctx.decodeAudioData(ab);
+        } catch { /* missing asset is fine */ }
+      })
+    );
+  }
+
+  makeNoise() {
+    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    return buf;
+  }
+
+  // ---------- preferences ----------
+  toggleMusic() {
+    this.musicOn = !this.musicOn;
+    writePref(STORAGE_KEYS.music, this.musicOn);
+    if (this.musicBus) this.musicBus.gain.setTargetAtTime(this.musicOn ? 1 : 0, this.ctx.currentTime, 0.05);
+    return this.musicOn;
+  }
+  toggleSfx() {
+    this.sfxOn = !this.sfxOn;
+    writePref(STORAGE_KEYS.sfx, this.sfxOn);
+    if (this.sfxBus) this.sfxBus.gain.setTargetAtTime(this.sfxOn ? 1 : 0, this.ctx.currentTime, 0.05);
+    return this.sfxOn;
+  }
+
+  // ---------- one-shot samples ----------
+  play(name, { volume = 1, minGap = 0, rate = 1 } = {}) {
+    if (!this.ctx) return false;
+    const now = performance.now();
+    if (minGap && now - (this.lastPlayed[name] || -1e9) < minGap * 1000) return false;
+    const buf = this.buffers[name];
+    if (!buf) return false;
+    this.lastPlayed[name] = now;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    const g = this.ctx.createGain();
+    g.gain.value = volume;
+    src.connect(g).connect(this.sfxBus);
+    src.start();
+    return true;
+  }
+
+  // ---------- synthesized SFX ----------
+  blip(freq = 880, dur = 0.08, type = 'square', vol = 0.25) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(this.sfxBus);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  }
+  drs() { this.blip(660, 0.09, 'square', 0.18); setTimeout(() => this.blip(990, 0.12, 'square', 0.18), 90); }
+  overtake() { this.blip(523, 0.06, 'triangle', 0.2); setTimeout(() => this.blip(784, 0.1, 'triangle', 0.2), 60); }
+  wheelGun(count = 4) {
+    for (let i = 0; i < count; i++) {
+      setTimeout(() => {
+        if (!this.ctx) return;
+        const t = this.ctx.currentTime;
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noise;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = 2600;
+        bp.Q.value = 1.5;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.5, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+        src.connect(bp).connect(g).connect(this.sfxBus);
+        src.start(t);
+        src.stop(t + 0.15);
+      }, i * 110);
+    }
+  }
+  crashNoise() {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(3000, t);
+    lp.frequency.exponentialRampToValueAtTime(120, t + 0.9);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.9, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.0);
+    src.connect(lp).connect(g).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + 1.1);
+  }
+  skid(vol = 0.35) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(900, t);
+    bp.frequency.linearRampToValueAtTime(1600, t + 0.6);
+    bp.Q.value = 6;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+    src.connect(bp).connect(g).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + 0.75);
+  }
+
+  // ---------- engine drone ----------
+  createEngine() {
+    const ctx = this.ctx;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    const osc2 = ctx.createOscillator();
+    osc2.type = 'square';
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 400;
+    lp.Q.value = 2;
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    const g2 = ctx.createGain();
+    g2.gain.value = 0.35;
+    osc.connect(lp);
+    osc2.connect(g2).connect(lp);
+    lp.connect(g).connect(this.sfxBus);
+    osc.start();
+    osc2.start();
+    this.engine = { osc, osc2, lp, g, gear: 1, rpm: 0.3 };
+  }
+
+  /**
+   * Called every frame. speedRatio 0..1 of max speed; running=false silences the engine.
+   * Simulates a 7-speed box: rpm climbs within a gear and drops on the upshift.
+   */
+  updateEngine(dt, speedRatio, running) {
+    if (!this.engine) return;
+    const e = this.engine;
+    const t = this.ctx.currentTime;
+    const targetGain = running ? 0.11 : 0;
+    e.g.gain.setTargetAtTime(targetGain, t, 0.08);
+    if (!running) return;
+    const gears = 7;
+    const pos = speedRatio * gears;
+    const gear = Math.min(gears, Math.floor(pos) + 1);
+    const inGear = pos - (gear - 1); // 0..1
+    const rpm = 0.25 + 0.75 * inGear;
+    e.rpm += (rpm - e.rpm) * Math.min(1, dt * 12);
+    const f = 55 + e.rpm * 190 + gear * 6;
+    e.osc.frequency.setTargetAtTime(f, t, 0.03);
+    e.osc2.frequency.setTargetAtTime(f * 0.5, t, 0.03);
+    e.lp.frequency.setTargetAtTime(300 + e.rpm * 1500, t, 0.05);
+    if (gear !== e.gear) {
+      e.gear = gear;
+      this.blip(120 + gear * 15, 0.05, 'sawtooth', 0.06);
+    }
+  }
+
+  // ---------- soundtrack: lookahead step sequencer ----------
+  startMusic() {
+    if (!this.ctx || this.seq.running) return;
+    this.seq.running = true;
+    this.seq.step = 0;
+    this.seq.nextNoteTime = this.ctx.currentTime + 0.05;
+    const tick = () => {
+      if (!this.seq.running) return;
+      const lookahead = 0.12;
+      while (this.seq.nextNoteTime < this.ctx.currentTime + lookahead) {
+        this.scheduleStep(this.seq.step, this.seq.nextNoteTime);
+        const secondsPerBeat = 60 / this.seq.bpm;
+        this.seq.nextNoteTime += secondsPerBeat / 4; // 16th notes
+        this.seq.step = (this.seq.step + 1) % 64;
+      }
+      this.seq.timer = setTimeout(tick, 30);
+    };
+    tick();
+  }
+  stopMusic() {
+    this.seq.running = false;
+    if (this.seq.timer) clearTimeout(this.seq.timer);
+    this.seq.timer = null;
+  }
+  /** bpm follows the speed; intensity 0..1 adds layers. */
+  setMusicState(bpm, intensity) {
+    this.seq.bpm = bpm;
+    this.seq.intensity = intensity;
+  }
+
+  scheduleStep(step, t) {
+    const i = this.seq.intensity;
+    const bar = Math.floor(step / 16);
+    const s16 = step % 16;
+    // kick: four on the floor, extra syncopation when intense
+    if (s16 % 4 === 0) this.kick(t);
+    if (i > 0.6 && s16 === 14) this.kick(t, 0.6);
+    // snare / clap on 2 and 4
+    if (i > 0.25 && (s16 === 4 || s16 === 12)) this.snare(t);
+    // hats: 8ths, then 16ths
+    if (s16 % 2 === 0) this.hat(t, 0.09 + i * 0.05);
+    else if (i > 0.45) this.hat(t, 0.04 + i * 0.04);
+    // bass line: minor pentatonic riff, two bar phrase
+    const riff = [0, 0, 7, 0, 5, 0, 3, 0, 0, 0, 7, 0, 10, 0, 5, 0, 0, 0, 7, 0, 5, 0, 3, 0, 12, 0, 10, 0, 7, 0, 5, 0];
+    const idx = (bar % 2) * 16 + s16;
+    if (riff[idx] !== undefined && (idx % 2 === 0)) {
+      const root = 41.2; // E1
+      const semis = riff[idx];
+      this.bass(t, root * Math.pow(2, semis / 12), 0.12 + i * 0.1);
+    }
+    // arpeggio lead once the track is spicy
+    if (i > 0.5 && s16 % 2 === 1) {
+      const scale = [0, 3, 5, 7, 10, 12, 15];
+      const n = scale[(step * 3 + bar) % scale.length];
+      this.lead(t, 329.6 * Math.pow(2, n / 12), 0.05 + (i - 0.5) * 0.08);
+    }
+  }
+  kick(t, vel = 1) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(160, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.22);
+    g.gain.setValueAtTime(0.9 * vel, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    o.connect(g).connect(this.musicBus);
+    o.start(t);
+    o.stop(t + 0.32);
+  }
+  hat(t, vel) {
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 8000;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vel, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    src.connect(hp).connect(g).connect(this.musicBus);
+    src.start(t);
+    src.stop(t + 0.06);
+  }
+  snare(t) {
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1900;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.4, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    src.connect(bp).connect(g).connect(this.musicBus);
+    src.start(t);
+    src.stop(t + 0.2);
+  }
+  bass(t, freq, vel) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = freq;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(900, t);
+    lp.frequency.exponentialRampToValueAtTime(180, t + 0.2);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vel, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+    o.connect(lp).connect(g).connect(this.musicBus);
+    o.start(t);
+    o.stop(t + 0.26);
+  }
+  lead(t, freq, vel) {
+    const ctx = this.ctx;
+    const o = ctx.createOscillator();
+    o.type = 'square';
+    o.frequency.value = freq;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vel, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    o.connect(g).connect(this.musicBus);
+    o.start(t);
+    o.stop(t + 0.12);
+  }
+
+  suspend() { if (this.ctx && this.ctx.state === 'running') this.ctx.suspend().catch(() => {}); }
+  resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); }
+}

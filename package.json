@@ -1,0 +1,18 @@
+{
+  "name": "rawe-ceek",
+  "version": "1.0.0",
+  "description": "Ferrari-fan survival racer: dodge tyres and rivals, manage tyre wear, pit in the window, trust the strategy (don't).",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test",
+    "format": "npx prettier --write \"src/**/*.js\" \"server/**/*.js\" \"test/**/*.js\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "tronzop",
+  "license": "MIT",
+  "private": true
+}

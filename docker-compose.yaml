@@ -1,0 +1,12 @@
+services:
+  rawe-ceek:
+    build: .
+    ports:
+      - "3732:8080"
+    environment:
+      - LEADERBOARD_FILE=/data/leaderboard.json
+    volumes:
+      - leaderboard:/data
+    restart: unless-stopped
+volumes:
+  leaderboard:
