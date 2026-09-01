@@ -28,12 +28,17 @@ next to the `.wav` with the same stem — `mp3`, `ogg` or `m4a` take precedence
 over `wav` automatically. Search the quote on the usual soundboards, trim to
 1–4 s, save under the exact filename.
 
+Every clip with words is subtitled on the in-game radio strip (speaker + line,
+from `who` / `say` in `src/grid.js`) the moment it starts playing, so the text
+always matches the audio. Wordless clips (`thunder`, `penalty`) show the pit
+wall's own line instead.
+
 Save into `assets/clips/`:
 
 | Filename | Quote | Plays on |
 | --- | --- | --- |
 | `lightsout.mp3` | Crofty — "It's lights out and away we go!" | race start |
-| `boxbox.mp3` | "Box box, box box." | pit window opens |
+| `boxbox.mp3` | "Box box, box box." | pit window opens while the car needs the stop (worn/punctured tyres, wing damage, wrong rubber) |
 | `hammertime.mp3` | Bono — "It's hammer time." | sustained push (alternates with *pushing like an animal*) |
 | `bono.mp3` | Hamilton — "Bono, my tyres are gone." | tyres go over the cliff; puncture; overtaking Hamilton |
 | `iamstupid.mp3` | Leclerc — "I am stupid, I am stupid." | oil; overtaking Leclerc |

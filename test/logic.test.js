@@ -245,6 +245,17 @@ test('pit mini-game: sweep, judgement and stop times', () => {
   assert.ok(stopSummary(perfect).record);
 });
 
+test('meme pack: every clip with words has a subtitle and a speaker', async () => {
+  const { OPTIONAL_CLIPS, clipLine } = await import('../src/grid.js');
+  for (const [id, c] of Object.entries(OPTIONAL_CLIPS)) {
+    if (c.say) assert.ok(c.who, `${id} has a line but no speaker`);
+    assert.equal(clipLine(id) === null, !c.say, `clipLine(${id}) disagrees with the data`);
+  }
+  assert.deepEqual(clipLine('pushing'), { who: 'Pit wall', say: 'Pushing like an animal.' });
+  assert.equal(clipLine('scream'), null); // no words: the pit wall's own line shows instead
+  assert.equal(clipLine(false), null); // playAny() returned nothing
+});
+
 test('meme pack: clip resolution prefers real recordings over the shipped voice pack', async () => {
   const { resolveClip, OPTIONAL_CLIPS, CLIP_EXTENSIONS } = await import('../src/grid.js');
   assert.equal(resolveClip('bwoah', ['bwoah.wav']), 'bwoah.wav');

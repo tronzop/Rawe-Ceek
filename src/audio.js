@@ -89,7 +89,10 @@ export class AudioEngine {
     this.master.connect(comp).connect(this.ctx.destination);
     this.musicBus = this.ctx.createGain();
     this.musicBus.gain.value = this.musicOn ? 1 : 0;
-    this.musicBus.connect(this.master);
+    // broadcast-style ducking: the band drops under team radio and fades out on a crash
+    this.duck = this.ctx.createGain();
+    this.duck.gain.value = 1;
+    this.musicBus.connect(this.duck).connect(this.master);
     this.mariachiBus = this.ctx.createGain();
     this.mariachiBus.gain.value = MARIACHI_GAIN;
     this.mariachiBus.connect(this.musicBus);
@@ -167,9 +170,11 @@ export class AudioEngine {
 
   // ---------- one-shot samples: one radio channel, clips never talk over each other ----------
   /**
-   * Plays a clip, or queues it if another clip is on the channel. Returns true when it
-   * will be heard (now or shortly). Queued clips expire after `queueTtl` seconds and the
-   * queue holds at most `maxQueue`, so a burst of events never becomes a monologue.
+   * Plays a clip, or queues it if another clip is on the channel. Returns the clip name
+   * when it will be heard (now or shortly), false otherwise. Queued clips expire after
+   * 4.5 s and the queue holds at most two, so a burst of events never becomes a monologue.
+   * `opts.onStart(name)` fires the moment the clip actually starts (so a subtitle can
+   * appear in sync with the voice, not when the event happened).
    */
   play(name, opts = {}) {
     if (!this.ctx) return false;
@@ -181,23 +186,28 @@ export class AudioEngine {
       if (this.queue.length >= 2 || this.queue.some((q) => q.name === name)) return false;
       this.queue.push({ name, opts, at: now });
       this.lastPlayed[name] = now;
-      return true;
+      return name;
     }
     return this.playNow(name, opts);
   }
-  /** Channel finished: start the next queued clip that is still fresh. */
+  /** Channel finished: start the next queued clip that is still fresh, else bring the band back up. */
   nextInQueue() {
     this.channelBusy = false;
     while (this.queue.length) {
       const q = this.queue.shift();
       if (performance.now() - q.at < 4500) { this.playNow(q.name, q.opts); return; }
     }
+    this.duckMusic(1, 0.35);
   }
-  playNow(name, { volume = 1, rate = 1 } = {}) {
+  /** Seconds a loaded clip runs for (0 when missing). */
+  duration(name) { return this.buffers[name] ? this.buffers[name].duration : 0; }
+  playNow(name, { volume = 1, rate = 1, onStart } = {}) {
     const buf = this.buffers[name];
     if (!buf) return false;
     this.lastPlayed[name] = performance.now();
     this.channelBusy = true;
+    this.duckMusic(0.4, 0.08);
+    if (onStart) onStart(name);
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.playbackRate.value = rate;
@@ -223,13 +233,17 @@ export class AudioEngine {
       src.start();
       src.onended = () => this.nextInQueue();
     }
-    return true;
+    return name;
   }
 
-  /** Plays the first clip in `names` that is loaded. Returns true if any played. */
+  /** Plays the first clip in `names` that is loaded. Returns its name, or false if none played. */
   playAny(names, opts) {
-    for (const n of names) if (n && this.buffers[n] && this.play(n, opts)) return true;
+    for (const n of names) if (n && this.buffers[n] && this.play(n, opts)) return n;
     return false;
+  }
+  /** Music level under speech / on a crash: 1 = full band. */
+  duckMusic(level, tc = 0.2) {
+    if (this.duck) this.duck.gain.setTargetAtTime(level, this.ctx.currentTime, tc);
   }
   /** Which optional clips actually loaded (for the title-screen asset checklist). */
   loaded(name) { return !!this.buffers[name]; }
@@ -446,6 +460,8 @@ export class AudioEngine {
   // ---------- soundtrack: lookahead step sequencer ----------
   startMusic() {
     if (!this.ctx || this.seq.running) return;
+    if (this.fadeTimer) { clearTimeout(this.fadeTimer); this.fadeTimer = null; }
+    this.duckMusic(1, 0.05);
     this.seq.running = true;
     this.seq.step = 0;
     this.seq.nextNoteTime = this.ctx.currentTime + 0.05;
@@ -470,6 +486,13 @@ export class AudioEngine {
     this.seq.running = false;
     if (this.seq.timer) clearTimeout(this.seq.timer);
     this.seq.timer = null;
+  }
+  /** The band dies with the car: a short fade instead of a hard cut, then the sequencer stops. */
+  fadeOutMusic(seconds = 0.6) {
+    if (!this.ctx) return;
+    this.duckMusic(0.0001, seconds / 3);
+    if (this.fadeTimer) clearTimeout(this.fadeTimer);
+    this.fadeTimer = setTimeout(() => { this.fadeTimer = null; this.stopMusic(); }, seconds * 1000);
   }
   /** bpm follows the speed; intensity 0..1 adds layers. */
   setMusicState(bpm, intensity) {
@@ -581,6 +604,8 @@ export class AudioEngine {
   }
   /** Descending stewards' beep for a penalty. */
   penalty() { [880, 660, 440].forEach((f, i) => setTimeout(() => this.blip(f, 0.14, 'sawtooth', 0.16), i * 130)); }
+  /** "Safety car in this lap": three rising beeps so the restart is audible before it is visible. */
+  scEnding() { [660, 784, 988].forEach((f, i) => setTimeout(() => this.blip(f, 0.12, 'square', 0.14), i * 160)); }
   /** Chequered-flag fanfare. */
   fanfare() { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.blip(f, 0.18, 'triangle', 0.22), i * 110)); }
   /** Thunder: long low-passed noise rumble. */
@@ -638,6 +663,68 @@ export class AudioEngine {
     }
     this.towNode.g.gain.setTargetAtTime(tow * 0.09, this.ctx.currentTime, 0.08);
     this.towNode.bp.frequency.setTargetAtTime(900 + tow * 900, this.ctx.currentTime, 0.1);
+  }
+  /** Rain on the bodywork: broadband hiss that follows the track wetness (0..1). */
+  updateRain(wetness) {
+    if (!this.ctx) return;
+    if (!this.rainNode) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      const hp = this.ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 900;
+      const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200;
+      const g = this.ctx.createGain(); g.gain.value = 0;
+      src.connect(hp).connect(lp).connect(g).connect(this.sfxBus);
+      src.start();
+      this.rainNode = { g, lp };
+    }
+    const t = this.ctx.currentTime;
+    this.rainNode.g.gain.setTargetAtTime(clamp01(wetness) * 0.11, t, 0.4);
+    this.rainNode.lp.frequency.setTargetAtTime(2200 + clamp01(wetness) * 3000, t, 0.4);
+  }
+  /**
+   * MGU-K deploy whine while the ERS button is held. The pitch climbs as the battery
+   * empties, so you can hear the boost running out before the bar tells you.
+   */
+  updateErs(boosting, charge01) {
+    if (!this.ctx) return;
+    if (!this.ersNode) {
+      const o = this.ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 1400;
+      const o2 = this.ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = 2800;
+      const bp = this.ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = 4; bp.frequency.value = 1800;
+      const g = this.ctx.createGain(); g.gain.value = 0;
+      o.connect(bp); o2.connect(bp); bp.connect(g).connect(this.sfxBus);
+      o.start(); o2.start();
+      this.ersNode = { o, o2, bp, g };
+    }
+    const t = this.ctx.currentTime;
+    const f = 1300 + (1 - clamp01(charge01)) * 1100;
+    this.ersNode.o.frequency.setTargetAtTime(f, t, 0.06);
+    this.ersNode.o2.frequency.setTargetAtTime(f * 2, t, 0.06);
+    this.ersNode.bp.frequency.setTargetAtTime(f * 1.3, t, 0.06);
+    this.ersNode.g.gain.setTargetAtTime(boosting ? 0.045 : 0, t, boosting ? 0.05 : 0.12);
+  }
+  /** Flat-tyre thump: a low knock once per wheel revolution while you limp back to the pits. */
+  updatePuncture(punctured, speedRatio) {
+    if (!this.ctx) return;
+    if (!this.punctureNode) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.loop = true;
+      const lp = this.ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 260; lp.Q.value = 1.5;
+      // pulse gate: a square LFO opens the gain once per revolution
+      const gate = this.ctx.createGain(); gate.gain.value = 0.5; // ±0.5 from the LFO → 0..1
+      const lfo = this.ctx.createOscillator(); lfo.type = 'square'; lfo.frequency.value = 6;
+      const lfoG = this.ctx.createGain(); lfoG.gain.value = 0.5;
+      lfo.connect(lfoG).connect(gate.gain);
+      const g = this.ctx.createGain(); g.gain.value = 0;
+      src.connect(lp).connect(gate).connect(g).connect(this.sfxBus);
+      src.start(); lfo.start();
+      this.punctureNode = { g, lfo };
+    }
+    const t = this.ctx.currentTime;
+    this.punctureNode.g.gain.setTargetAtTime(punctured ? 0.35 : 0, t, 0.1);
+    this.punctureNode.lfo.frequency.setTargetAtTime(3 + clamp01(speedRatio) * 14, t, 0.1);
   }
 
   suspend() { if (this.ctx && this.ctx.state === 'running') this.ctx.suspend().catch(() => {}); }

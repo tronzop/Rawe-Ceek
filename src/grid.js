@@ -121,30 +121,44 @@ export function resolveClip(id, files) {
   }
   return null;
 }
+// `who` / `say` are the subtitle shown on the radio strip while the clip plays, so what
+// you read always matches what you hear. Clips without words (thunder, the penalty
+// shout) have no subtitle and the pit wall's own line shows instead.
 export const OPTIONAL_CLIPS = {
-  lightsout: { event: 'race start', desc: 'Crofty: "It\'s lights out and away we go!"' },
-  boxbox: { event: 'pit window opens', desc: '"Box box, box box."' },
-  hammertime: { event: 'pushing (alternates with the shipped clip)', desc: 'Bono: "It\'s hammer time."' },
-  bono: { event: 'tyres over the cliff · overtaking Hamilton', desc: 'Hamilton: "Bono, my tyres are gone."' },
-  iamstupid: { event: 'oil · overtaking Leclerc', desc: 'Leclerc: "I am stupid, I am stupid."' },
-  nomichaelno: { event: 'crash (alternates with the shipped clip)', desc: 'Masi/Toto: "No Michael, no! No, that was so not right."' },
-  isthatglock: { event: 'rain starts · overtaking Schumacher', desc: 'Brundle: "Is that Glock?!"' },
-  dudududu: { event: 'overtaking Verstappen', desc: '"Du du du du Max Verstappen"' },
-  simplylovely: { event: 'chequered flag · close call with Verstappen', desc: 'Verstappen: "Simply lovely."' },
-  gp2engine: { event: 'overtaking Alonso', desc: 'Alonso: "GP2 engine! GP2! Aaargh!"' },
-  smoothoperator: { event: 'overtaking Sainz', desc: 'Sainz: "Smooooth operator."' },
-  what: { event: 'close call with Tsunoda', desc: 'Tsunoda: "WHAT?!"' },
-  bwoah: { event: 'overtaking Räikkönen', desc: 'Räikkönen: "Bwoah."' },
-  leavemealone: { event: 'close call with Räikkönen · safety car restart', desc: 'Räikkönen: "Leave me alone, I know what I\'m doing."' },
-  itsjames: { event: 'overtaking Bottas · team-mate pass', desc: '"Valtteri, it\'s James."' },
-  multi21: { event: 'overtaking your team-mate', desc: 'Horner: "Multi 21, Seb. Multi 21."' },
-  getinthere: { event: 'chequered flag', desc: 'Bono: "Get in there, Lewis!"' },
-  wearechecking: { event: 'safety car deployed · botched pit stop', desc: 'Ferrari: "We are checking."' },
-  safetycar: { event: 'safety car deployed', desc: '"Safety car, safety car."' },
+  lightsout: { event: 'race start', desc: 'Crofty: "It\'s lights out and away we go!"', who: 'Crofty', say: "It's lights out and away we go!" },
+  boxbox: { event: 'pit window opens (when the car needs the stop)', desc: '"Box box, box box."', who: 'Pit wall', say: 'Box box, box box.' },
+  hammertime: { event: 'pushing (alternates with the shipped clip)', desc: 'Bono: "It\'s hammer time."', who: 'Bono', say: "It's hammer time." },
+  bono: { event: 'tyres over the cliff · overtaking Hamilton', desc: 'Hamilton: "Bono, my tyres are gone."', who: 'Hamilton', say: 'Bono, my tyres are gone.' },
+  iamstupid: { event: 'oil · overtaking Leclerc', desc: 'Leclerc: "I am stupid, I am stupid."', who: 'Leclerc', say: 'I am stupid, I am stupid.' },
+  nomichaelno: { event: 'crash (alternates with the shipped clip)', desc: 'Masi/Toto: "No Michael, no! No, that was so not right."', who: 'Toto', say: 'No Michael, no! No, that was so not right.' },
+  isthatglock: { event: 'rain starts · overtaking Schumacher', desc: 'Brundle: "Is that Glock?!"', who: 'Brundle', say: 'Is that Glock?!' },
+  dudududu: { event: 'overtaking Verstappen', desc: '"Du du du du Max Verstappen"', who: 'Grandstand', say: 'Du du du du, Max Verstappen.' },
+  simplylovely: { event: 'chequered flag · close call with Verstappen', desc: 'Verstappen: "Simply lovely."', who: 'Verstappen', say: 'Simply lovely.' },
+  gp2engine: { event: 'overtaking Alonso', desc: 'Alonso: "GP2 engine! GP2! Aaargh!"', who: 'Alonso', say: 'GP2 engine! GP2! Aaargh!' },
+  smoothoperator: { event: 'overtaking Sainz', desc: 'Sainz: "Smooooth operator."', who: 'Sainz', say: 'Smooooth operator.' },
+  what: { event: 'close call with Tsunoda', desc: 'Tsunoda: "WHAT?!"', who: 'Tsunoda', say: 'WHAT?!' },
+  bwoah: { event: 'overtaking Räikkönen', desc: 'Räikkönen: "Bwoah."', who: 'Räikkönen', say: 'Bwoah.' },
+  leavemealone: { event: 'close call with Räikkönen · safety car restart', desc: 'Räikkönen: "Leave me alone, I know what I\'m doing."', who: 'Räikkönen', say: "Leave me alone, I know what I'm doing." },
+  itsjames: { event: 'overtaking Bottas · team-mate pass', desc: '"Valtteri, it\'s James."', who: 'Mercedes', say: "Valtteri, it's James." },
+  multi21: { event: 'overtaking your team-mate', desc: 'Horner: "Multi 21, Seb. Multi 21."', who: 'Horner', say: 'Multi 21, Seb. Multi 21.' },
+  getinthere: { event: 'chequered flag', desc: 'Bono: "Get in there, Lewis!"', who: 'Bono', say: 'Get in there, Lewis!' },
+  wearechecking: { event: 'safety car deployed · botched pit stop', desc: 'Ferrari: "We are checking."', who: 'Ferrari', say: 'We are checking.' },
+  safetycar: { event: 'safety car deployed', desc: '"Safety car, safety car."', who: 'Race control', say: 'Safety car, safety car.' },
   penalty: { event: '5 s penalty', desc: 'Any driver discovering a penalty. Loudly.' },
   thunder: { event: 'lightning', desc: 'A real thunder rumble.' },
-  yesboys: { event: 'overtaking Norris', desc: 'Norris: "Yes boys!"' },
+  yesboys: { event: 'overtaking Norris', desc: 'Norris: "Yes boys!"', who: 'Norris', say: 'Yes boys!' },
 };
+
+/** Subtitles for the four clips that ship in assets/ (the scream and the game-over clip have no words). */
+const SHIPPED_LINES = {
+  pushing: { who: 'Pit wall', say: 'Pushing like an animal.' },
+  sonotright: { who: 'Toto', say: 'That is so not right.' },
+};
+/** { who, say } for a clip that has words, or null. */
+export function clipLine(name) {
+  const c = OPTIONAL_CLIPS[name] || SHIPPED_LINES[name];
+  return c && c.say ? { who: c.who, say: c.say } : null;
+}
 
 // Optional driver portraits live at assets/drivers/<driver id>.<png|jpg|webp>.
 // If the file for the driver you crashed into exists, the retirement screen

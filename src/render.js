@@ -1,7 +1,7 @@
 // Canvas renderer. Reads the World and draws the whole scene + HUD.
 // The world is in logical units (height = WORLD.height); `view.scale` maps to device px.
-import { COMPOUNDS, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SPEED } from './config.js';
-import { clamp, formatDistance, formatTime, gpProgress, lerp, positionLabel, sweepPos } from './logic.js';
+import { COMPOUNDS, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SPEED, TYRES } from './config.js';
+import { clamp, engineState, formatDistance, formatTime, gpProgress, lerp, positionLabel, sweepPos } from './logic.js';
 
 const FONT = '"Segoe UI", system-ui, Roboto, sans-serif';
 const MONO = '"Cascadia Mono", Consolas, "Roboto Mono", monospace';
@@ -1291,8 +1291,12 @@ export class Renderer {
   drawHud(world, hud, W, H) {
     const { ctx } = this;
     const pad = 18;
-    // speedo (bottom-left)
+    // speedo (bottom-left): km/h, the gear you can hear, rev bars that saw with the engine, ERS
     const kmh = world.kmh;
+    const ratio = clamp(world.speed / SPEED.max, 0, 1);
+    const eng = engineState(ratio);
+    const stopped = world.pit.inLane && world.pit.phase === 'stop';
+    const redline = eng.rpmNorm > 0.95 && !stopped && !world.gameOver;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = 'rgba(8,10,16,0.82)';
@@ -1304,38 +1308,40 @@ export class Renderer {
     ctx.font = `14px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
     ctx.fillText('km/h', pad + 108, H - 66);
-    // tow / penalty status beside the speed
+    // gear: flashes red at the redline, right before the upshift you hear
     ctx.textAlign = 'right';
-    ctx.font = `bold 12px ${FONT}`;
-    if (world.penalty > 0) {
-      ctx.fillStyle = '#ff3b3b';
-      ctx.fillText(`PENALTY ${world.penalty.toFixed(1)}s`, pad + 238, H - 96);
-    } else if (world.sc.active) {
-      ctx.fillStyle = '#ffd400';
-      ctx.fillText('SC DELTA', pad + 238, H - 96);
-    } else if (world.sc.restartTimer > 0) {
-      ctx.fillStyle = '#2ecc71';
-      ctx.fillText(`RESTART x2 ${world.sc.restartTimer.toFixed(1)}s`, pad + 238, H - 96);
-    } else if (world.tow > 0.15) {
-      ctx.fillStyle = `rgba(125,249,255,${0.5 + world.tow * 0.5})`;
-      ctx.fillText(`TOW ${Math.round(world.tow * 100)}%`, pad + 238, H - 96);
-    }
+    ctx.font = `bold 40px ${MONO}`;
+    ctx.fillStyle = redline && Math.sin(this.time * 40) > 0 ? '#ff3b3b' : '#ffd400';
+    ctx.fillText(stopped || world.gameOver ? 'N' : String(eng.gear), pad + 236, H - 66);
+    ctx.font = `bold 10px ${FONT}`;
+    ctx.fillStyle = '#8a91a0';
+    ctx.fillText('GEAR', pad + 236, H - 100);
+    // status chip on the card's top edge: whatever is capping or boosting the speed right now
+    let chip = null;
+    if (world.penalty > 0) chip = [`PENALTY ${world.penalty.toFixed(1)}s`, '#ff3b3b', '#fff'];
+    else if (world.sc.active) chip = ['SC DELTA — hold station', '#ffd400', '#111'];
+    else if (world.sc.restartTimer > 0) chip = [`RESTART ×2 · ${world.sc.restartTimer.toFixed(1)}s`, '#2ecc71', '#111'];
+    else if (world.tyre.punctured) chip = ['LIMPING — box', '#ff3b3b', '#fff'];
+    else if (world.player.spin > 0) chip = ['SPIN', '#ff8a00', '#111'];
+    else if (world.tow > 0.15) chip = [`TOW ${Math.round(world.tow * 100)}% · battery charging`, `rgba(125,249,255,${0.6 + world.tow * 0.4})`, '#111'];
+    if (chip) this.drawChip(chip[0], pad + 14, H - 118, chip[1], chip[2], 'left');
     ctx.textAlign = 'left';
-    // gear bars
-    const ratio = clamp(world.speed / SPEED.max, 0, 1);
+    // rev bars: rpm within the gear (they climb, the gear shifts, they drop — in step with the engine note)
+    const revs = stopped || world.gameOver ? 0 : eng.rpmNorm;
     for (let i = 0; i < 14; i++) {
-      const on = i / 14 < ratio;
+      const on = i / 14 < revs;
       ctx.fillStyle = on ? (i > 10 ? '#ff3b3b' : i > 7 ? '#ffd400' : '#2ecc71') : 'rgba(255,255,255,0.12)';
       ctx.fillRect(pad + 14 + i * 16, H - 52, 12, 10);
     }
-    // ERS
-    ctx.fillStyle = '#c9ced9';
+    // ERS: the label says what the battery is doing (the whine you hear while boosting)
+    const ersLow = world.ers.charge <= ERS.minToEngage && !world.ers.boosting;
+    ctx.fillStyle = world.ers.boosting ? '#7df9ff' : ersLow ? '#ff8a00' : '#c9ced9';
     ctx.font = `bold 11px ${FONT}`;
-    ctx.fillText('ERS', pad + 14, H - 28);
+    ctx.fillText(world.ers.boosting ? 'BOOST' : ersLow ? 'ERS LOW' : 'ERS', pad + 14, H - 28);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
-    ctx.fillRect(pad + 44, H - 37, 190, 10);
+    ctx.fillRect(pad + 66, H - 37, 168, 10);
     ctx.fillStyle = world.ers.boosting ? '#7df9ff' : world.ers.charge > ERS.minToEngage ? '#2ee6a6' : '#666';
-    ctx.fillRect(pad + 44, H - 37, 190 * (world.ers.charge / ERS.max), 10);
+    ctx.fillRect(pad + 66, H - 37, 168 * (world.ers.charge / ERS.max), 10);
 
     // tyre widget (bottom-right)
     const tw = 250;
@@ -1362,14 +1368,20 @@ export class Renderer {
     ctx.fillText(c.short, 0, 1);
     ctx.restore();
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-    ctx.fillStyle = '#fff';
-    ctx.font = `bold 15px ${FONT}`;
-    ctx.fillText(world.tyre.punctured ? 'PUNCTURE' : world.tyre.temp < 0.6 ? `${c.label} · COLD` : c.label, tx + 80, H - 88);
+    // tyre state line: puncture and the cliff blink, because both mean "box"
     const wear = world.tyre.wear;
+    const cliff = wear > TYRES.cliffStart && !world.tyre.punctured;
+    const blink = Math.sin(this.time * 8) > 0;
+    ctx.fillStyle = world.tyre.punctured ? (blink ? '#ff3b3b' : '#fff') : cliff && blink ? '#ffd400' : '#fff';
+    ctx.font = `bold 15px ${FONT}`;
+    ctx.fillText(world.tyre.punctured ? 'PUNCTURE — BOX' : cliff ? `${c.label} · CLIFF` : world.tyre.temp < 0.6 ? `${c.label} · COLD` : c.label, tx + 80, H - 88);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(tx + 80, H - 78, 150, 10);
-    ctx.fillStyle = wear > 85 ? '#ff3b3b' : wear > 65 ? '#ffd400' : '#2ecc71';
+    ctx.fillStyle = wear > 85 ? '#ff3b3b' : wear > TYRES.cliffStart ? '#ffd400' : '#2ecc71';
     ctx.fillRect(tx + 80, H - 78, 150 * (1 - wear / 100), 10);
+    // cliff marker on the wear bar so you can see it coming
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillRect(tx + 80 + 150 * (1 - TYRES.cliffStart / 100) - 1, H - 80, 2, 14);
     ctx.fillStyle = '#c9ced9';
     ctx.font = `12px ${FONT}`;
     ctx.fillText(`grip ${Math.round(world.grip * 100)}%`, tx + 80, H - 58);
@@ -1382,23 +1394,16 @@ export class Renderer {
     ctx.fillStyle = '#8a91a0';
     ctx.font = `11px ${FONT}`;
     ctx.fillText('[1-5 / Tab]', tx + 80, H - 22);
-    // pit status
+    // pit status: a chip on the card's edge (it used to float over the grass), urgent when the car needs the stop
     const pitIn = world.pitCountdown();
-    ctx.textAlign = 'right';
-    ctx.font = `bold 12px ${FONT}`;
-    if (world.pit.inLane) {
-      ctx.fillStyle = '#ffd400';
-      ctx.fillText(world.pit.phase === 'stop' ? 'IN THE BOX — fire the guns!' : 'PIT LANE', tx + tw - 12, H - 104);
-    } else if (world.pit.open) {
-      ctx.fillStyle = '#2ecc71';
-      ctx.fillText(world.pit.requested ? 'BOXING — copy' : 'PIT OPEN — press B', tx + tw - 12, H - 104);
-    } else if (world.pit.cooldown > 0) {
-      ctx.fillStyle = '#8a91a0';
-      ctx.fillText('fresh tyres — stay out', tx + tw - 12, H - 104);
-    } else {
-      ctx.fillStyle = '#8a91a0';
-      ctx.fillText(`pit window in ${Math.ceil(pitIn)}s`, tx + tw - 12, H - 104);
-    }
+    const needsStop = world.tyre.punctured || cliff || world.player.damage > 0
+      || (world.rain > 0.35 && c.wet === undefined) || (world.rain < 0.1 && c.wet !== undefined);
+    let pitChip;
+    if (world.pit.inLane) pitChip = [world.pit.phase === 'stop' ? 'IN THE BOX — fire the guns!' : 'PIT LANE', '#ffd400', '#111'];
+    else if (world.pit.open) pitChip = [world.pit.requested ? 'BOXING — copy' : needsStop ? 'PIT OPEN — BOX NOW (B)' : 'PIT OPEN — press B', needsStop && blink ? '#7ff0b0' : '#2ecc71', '#111'];
+    else if (world.pit.cooldown > 0) pitChip = ['fresh tyres — stay out', 'rgba(52,56,66,0.96)', '#c9ced9'];
+    else pitChip = [`${needsStop ? 'BOX in' : 'pit window in'} ${Math.ceil(pitIn)}s`, needsStop ? 'rgba(255,212,0,0.92)' : 'rgba(52,56,66,0.96)', needsStop ? '#111' : '#c9ced9'];
+    this.drawChip(pitChip[0], tx + tw - 12, H - 118, pitChip[1], pitChip[2], 'right');
 
     // top strip: score, distance, time, overtakes, weather
     ctx.textAlign = 'left';
@@ -1445,21 +1450,61 @@ export class Renderer {
     ctx.font = `11px ${FONT}`;
     ctx.fillText(hud.musicOn ? '♪ on (M)' : '♪ off (M)', vx + vw - 12, pad + 40);
 
+    // Radio strip. Wide screens: in the gap between the two top cards. Narrow ones (near-square
+    // windows, phones): under the cards, so it never covers the score or the venue. Long lines
+    // wrap instead of running off; a subtitled clip names who is talking.
+    const gap = (W - pad - 250) - (pad + 300) - 24;
+    const narrow = gap < 380;
+    const radioMaxW = narrow ? W - pad * 2 : Math.min(gap, 620);
+    const radioY = narrow ? pad + 64 + 10 : pad + 6;
+    const bannerY = radioY + 68; // SC / penalty banners stack under the strip's tallest form
+    if (hud.radio && hud.radio.age < (hud.radio.dur ?? 4.5)) {
+      const dur = hud.radio.dur ?? 4.5;
+      const a = Math.min(1, hud.radio.age / 0.12) * clamp((dur - hud.radio.age) / 0.6, 0, 1);
+      const who = hud.radio.who;
+      ctx.globalAlpha = a;
+      ctx.textAlign = 'left';
+      ctx.font = `bold 16px ${FONT}`;
+      const lines = wrapText(ctx, who ? hud.radio.text : `📻 ${hud.radio.text}`, radioMaxW - 34, 3);
+      ctx.font = `bold 11px ${FONT}`;
+      const whoW = who ? ctx.measureText(`🔊 ${who.toUpperCase()}`).width : 0;
+      ctx.font = `bold 16px ${FONT}`;
+      const bw = Math.min(radioMaxW, Math.max(whoW, ...lines.map((l) => ctx.measureText(l).width)) + 34);
+      const bh = 12 + (who ? 15 : 0) + lines.length * 21;
+      const rx = W / 2 - bw / 2;
+      ctx.fillStyle = 'rgba(10,10,14,0.82)';
+      roundRect(ctx, rx, radioY, bw, bh, 8);
+      ctx.fill();
+      ctx.fillStyle = who ? '#ffd400' : '#e10600';
+      ctx.fillRect(rx, radioY + 4, 6, bh - 8);
+      let ty = radioY + 8;
+      if (who) {
+        ctx.font = `bold 11px ${FONT}`;
+        ctx.fillStyle = '#ffd400';
+        ctx.fillText(`🔊 ${who.toUpperCase()}`, rx + 16, ty + 11);
+        ty += 15;
+        ctx.font = `bold 16px ${FONT}`;
+      }
+      ctx.fillStyle = '#fff';
+      lines.forEach((l, i) => ctx.fillText(l, rx + 16, ty + 17 + i * 21));
+      ctx.globalAlpha = 1;
+    }
+
     // safety car banner
     if (world.sc.active) {
       const on = Math.sin(this.time * 6) > 0;
       ctx.textAlign = 'center';
       ctx.fillStyle = on ? '#ffd400' : '#ffb000';
-      roundRect(ctx, W / 2 - 130, pad + 56, 260, 30, 6);
+      roundRect(ctx, W / 2 - 130, bannerY, 260, 30, 6);
       ctx.fill();
       ctx.fillStyle = '#111';
       ctx.font = `900 16px ${FONT}`;
-      ctx.fillText(world.sc.phase === 'ending' ? 'SAFETY CAR IN THIS LAP' : 'SAFETY CAR — NO OVERTAKING', W / 2, pad + 77);
+      ctx.fillText(world.sc.phase === 'ending' ? 'SAFETY CAR IN THIS LAP' : 'SAFETY CAR — NO OVERTAKING', W / 2, bannerY + 21);
     }
 
     // penalty banner: a served penalty should be unmissable, not a corner note
     if (world.penalty > 0) {
-      const py = pad + 56 + (world.sc.active ? 36 : 0);
+      const py = bannerY + (world.sc.active ? 36 : 0);
       ctx.textAlign = 'center';
       ctx.fillStyle = '#e10600';
       roundRect(ctx, W / 2 - 150, py, 300, 30, 6);
@@ -1467,27 +1512,6 @@ export class Renderer {
       ctx.fillStyle = '#fff';
       ctx.font = `900 14px ${FONT}`;
       ctx.fillText(`SERVING PENALTY — ${world.penalty.toFixed(1)}s — NO SCORING`, W / 2, py + 20);
-    }
-
-    // radio message: quick fade in, holds for the message's own duration
-    if (hud.radio && hud.radio.age < (hud.radio.dur ?? 4.5)) {
-      const dur = hud.radio.dur ?? 4.5;
-      const a = Math.min(1, hud.radio.age / 0.12) * clamp((dur - hud.radio.age) / 0.6, 0, 1);
-      ctx.globalAlpha = a;
-      ctx.textAlign = 'left';
-      ctx.font = `bold 16px ${FONT}`;
-      const text = `📻 ${hud.radio.text}`;
-      const tw2 = ctx.measureText(text).width + 30;
-      const rx = W / 2 - tw2 / 2;
-      const ry = pad + 10;
-      ctx.fillStyle = 'rgba(10,10,14,0.75)';
-      roundRect(ctx, rx, ry, tw2, 38, 8);
-      ctx.fill();
-      ctx.fillStyle = '#e10600';
-      ctx.fillRect(rx, ry, 6, 38);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(text, rx + 16, ry + 25);
-      ctx.globalAlpha = 1;
     }
 
     // toast (big centre text: milestones etc.)
@@ -1523,9 +1547,37 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
   }
+
+  /** Small status pill centred on y, growing left or right from x. */
+  drawChip(text, x, y, bg, fg = '#111', align = 'left') {
+    const { ctx } = this;
+    ctx.font = `bold 11px ${FONT}`;
+    const w = ctx.measureText(text).width + 20;
+    const x0 = align === 'right' ? x - w : x;
+    ctx.fillStyle = bg;
+    roundRect(ctx, x0, y - 11, w, 22, 11);
+    ctx.fill();
+    ctx.fillStyle = fg;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x0 + 10, y + 1);
+    ctx.textBaseline = 'alphabetic';
+  }
 }
 
 // ---------- helpers ----------
+/** Greedy word wrap for the current ctx.font; the last permitted line gets an ellipsis if it overflows. */
+function wrapText(ctx, text, maxWidth, maxLines = 3) {
+  const lines = [];
+  let cur = '';
+  for (const word of text.split(' ')) {
+    const next = cur ? `${cur} ${word}` : word;
+    if (cur && ctx.measureText(next).width > maxWidth) { lines.push(cur); cur = word; } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] += '…'; }
+  return lines;
+}
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const easeOut = (t) => 1 - Math.pow(1 - t, 3);
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);

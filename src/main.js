@@ -1,5 +1,5 @@
 // Bootstrap: wires input, world, renderer, audio and the DOM screens together.
-import { COMPOUNDS, COMPOUND_ORDER, GP, SPEED, VENUES, WORLD } from './config.js';
+import { COMPOUNDS, COMPOUND_ORDER, ERS, GP, SPEED, TYRES, VENUES, WORLD } from './config.js';
 import { Input } from './input.js';
 import { World } from './world.js';
 import { Renderer } from './render.js';
@@ -7,7 +7,7 @@ import { AudioEngine, TRACKS } from './audio.js';
 import { radioLine } from './radio.js';
 import { Leaderboard } from './leaderboard.js';
 import { Career, TROPHIES } from './career.js';
-import { DRIVERS, OPTIONAL_CLIPS, resolveClip } from './grid.js';
+import { DRIVERS, OPTIONAL_CLIPS, clipLine, resolveClip } from './grid.js';
 import { clamp, formatDistance, lerp, positionLabel } from './logic.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -71,8 +71,8 @@ function startGame() {
   show(null);
   audio.resume();
   audio.startMusic();
-  radio('start');
-  audio.play('lightsout', { volume: 1 });
+  // Crofty if the clip is loaded (subtitled), otherwise the pit wall's radio check
+  if (!clipLine(say(['lightsout'], { volume: 1 }))) radio('start');
   $('#gameOverScreen').classList.remove('revealed');
 }
 function pause() {
@@ -90,9 +90,9 @@ function resume() {
 }
 function gameOver(payload = {}) {
   state = 'over';
-  audio.stopMusic();
+  audio.fadeOutMusic(0.7); // the band dies with the car
   audio.crashNoise();
-  setTimeout(() => audio.playAny([Math.random() < 0.5 ? 'nomichaelno' : null, 'gameover'], { volume: 1 }), 250);
+  setTimeout(() => say([Math.random() < 0.5 ? 'nomichaelno' : null, 'gameover'], { volume: 1 }), 250);
   const previousBest = Leaderboard.best();
   hud.best = Leaderboard.recordBest(world.score);
   const newBest = world.score > previousBest && previousBest > 0;
@@ -159,24 +159,37 @@ const RADIO_PREEMPT = new Set([
   'pitRecord', 'pitSlow', 'pitOut', 'teammate', 'teammateClose',
 ]);
 const radioQueue = [];
+/** Wrong tyres for the weather: slicks on a wet track or wets on a dry one. */
+function wrongTyres() {
+  const c = COMPOUNDS[world.tyre.compound];
+  return (world.rain > 0.35 && c.wet === undefined) || (world.rain < 0.1 && c.wet !== undefined);
+}
+/** Does the car actually need the next stop (wear, puncture, damage, weather)? */
+function carNeedsStop() {
+  return world.tyre.punctured || world.tyre.wear > TYRES.cliffStart || world.player.damage > 0 || wrongTyres();
+}
 function radio(kind, ctx = {}) {
   // give the pit wall eyes: the line picker can react to the car's actual state
   const c = COMPOUNDS[world.tyre.compound];
-  const wrongTyres = (world.rain > 0.35 && c.wet === undefined) || (world.rain < 0.1 && c.wet !== undefined);
   const text = radioLine(kind, {
     ...ctx,
     wear: world.tyre.wear,
     onSlicks: c.wet === undefined,
     onWets: c.wet !== undefined,
     position: positionLabel(world.overtakes),
-    urgent: world.tyre.punctured || world.tyre.wear > 65 || world.player.damage > 0 || wrongTyres,
+    urgent: carNeedsStop(),
   });
   if (!text) return;
   const msg = { kind, text, age: 0, dur: clamp(2.2 + text.length * 0.04, 2.6, 4.6) };
-  if (RADIO_PREEMPT.has(kind) || !hud.radio || hud.radio.age >= hud.radio.dur) {
+  const live = hud.radio && hud.radio.age < hud.radio.dur;
+  const speaking = live && hud.radio.kind === 'clip'; // a subtitled clip is on air: never talk over it
+  if (!live || (RADIO_PREEMPT.has(kind) && !speaking)) {
     hud.radio = msg;
     radioQueue.length = 0;
     audio.radioClick();
+  } else if (RADIO_PREEMPT.has(kind)) {
+    radioQueue.unshift(msg);
+    radioQueue.length = Math.min(radioQueue.length, 2);
   } else {
     // one message per kind in the queue; keep it short so nothing arrives stale
     const i = radioQueue.findIndex((m) => m.kind === kind);
@@ -184,6 +197,27 @@ function radio(kind, ctx = {}) {
     else radioQueue.push(msg);
     if (radioQueue.length > 2) radioQueue.shift();
   }
+}
+/**
+ * Subtitle for a clip, shown the instant the clip starts (audio.play's onStart) so the
+ * strip always reads what the speaker is saying. A wall line that had barely been on
+ * screen goes back to the front of the queue instead of being lost.
+ */
+function subtitle(name) {
+  const line = clipLine(name);
+  if (!line) return;
+  if (hud.radio && hud.radio.kind !== 'clip' && hud.radio.age < 1.2 && hud.radio.age < hud.radio.dur) radioQueue.unshift({ ...hud.radio, age: 0 });
+  hud.radio = { kind: 'clip', who: line.who, text: line.say, age: 0, dur: clamp(audio.duration(name) + 1.0, 2.6, 6) };
+}
+/**
+ * Voice first: plays the first loaded clip in `names` with its subtitle. Returns the clip
+ * name (or false). When `kind` is given and no clip with words played, the pit wall says
+ * its own line instead — so every event gets exactly one voice.
+ */
+function say(names, opts = {}, kind = null, ctx) {
+  const played = audio.playAny(names, { ...opts, onStart: subtitle });
+  if (kind && !clipLine(played)) radio(kind, ctx);
+  return played;
 }
 function toast(text, color, sub) {
   hud.toast = { text, color, sub, age: 0, dur: sub ? 2.2 : 1.6 };
@@ -193,27 +227,37 @@ function onWorldEvent(evt, payload = {}) {
   switch (evt) {
     case 'radio': radio(payload.kind, payload.ctx); break;
     case 'crash': radio('crash', { driver: payload.driver }); gameOver(payload); break;
-    case 'closeCall':
-      audio.playAny([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 }) || audio.skid(0.25);
-      if (payload.count % 3 === 0 || payload.driver?.legend) radio('closeCall', { driver: payload.driver });
+    case 'closeCall': {
+      // the driver's own reaction if we have it (subtitled), else the scream, else tyre squeal
+      const v = say([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 });
+      if (!v) audio.skid(0.25);
+      if (!clipLine(v) && (payload.count % 3 === 0 || payload.driver?.legend)) radio('closeCall', { driver: payload.driver });
       break;
-    case 'overtake':
+    }
+    case 'overtake': {
       audio.overtake();
-      if (payload.driver?.clip?.overtake && audio.play(payload.driver.clip.overtake, { volume: 0.9, minGap: 6 })) radio('overtake', { driver: payload.driver });
-      else if (payload.count % 4 === 1 || payload.driver?.legend) radio('overtake', { driver: payload.driver });
+      const v = say([payload.driver?.clip?.overtake], { volume: 0.9, minGap: 6 });
+      if (!clipLine(v) && (payload.count % 4 === 1 || payload.driver?.legend)) radio('overtake', { driver: payload.driver });
       break;
-    case 'oil': audio.playAny(['iamstupid', 'sonotright'], { volume: 0.9, minGap: 3 }); audio.skid(0.4); radio('oil'); break;
+    }
+    case 'oil': say(['iamstupid', 'sonotright'], { volume: 0.9, minGap: 3 }); audio.skid(0.4); radio('oil'); break;
     case 'debris': audio.skid(0.2); radio('debris'); break;
-    case 'drs': audio.drs(); toast('DRS', '#2ecc71'); break;
-    case 'pushing': audio.playAny([Math.random() < 0.4 ? 'hammertime' : null, 'pushing'], { volume: 1, minGap: 10 }); radio('pushing'); break;
+    case 'drs': audio.drs(); toast('DRS', '#2ecc71', `+${ERS.drsRefill} battery`); break;
+    case 'pushing': say([Math.random() < 0.4 ? 'hammertime' : null, 'pushing'], { volume: 1, minGap: 10 }, 'pushing'); break;
     case 'milestone':
       toast(`${payload.km} km`, '#ffd400');
+      // "pushing like an animal" only when you actually are — not while lifting and coasting
+      if (payload.km % 2 === 0 && world.player.throttle > 1.08 && !world.sc.active) say(['pushing'], { volume: 1, minGap: 10 });
       radio('milestone', { km: payload.km });
-      if (payload.km % 2 === 0) audio.play('pushing', { volume: 1, minGap: 10 });
       break;
-    case 'tyresHot': toast('TYRE CLIFF', '#ffd400', 'grip falling away — box soon'); radio('tyresHot'); audio.play('bono', { volume: 0.9, minGap: 20 }); break;
-    case 'puncture': toast('PUNCTURE', '#ff3b3b'); radio('puncture'); audio.playAny(['bono', 'sonotright'], { volume: 0.9, minGap: 3 }); break;
-    case 'pitOpen': radio('pitOpen'); audio.play('boxbox', { volume: 0.8, minGap: 20 }); break;
+    case 'tyresHot': toast('TYRE CLIFF', '#ffd400', 'grip falling away — box soon'); say(['bono'], { volume: 0.9, minGap: 20 }); radio('tyresHot'); break;
+    case 'puncture': toast('PUNCTURE', '#ff3b3b', 'limp to the pits'); say(['bono', 'sonotright'], { volume: 0.9, minGap: 3 }); radio('puncture'); break;
+    case 'pitOpen':
+      // "Box box" is a call, not a notice: only when the car actually needs the stop
+      if (carNeedsStop()) say(['boxbox'], { volume: 0.8, minGap: 20 });
+      else audio.blip(1046, 0.09, 'sine', 0.12);
+      radio('pitOpen');
+      break;
     case 'pitIn': radio('pitIn'); break;
     case 'pitRequested': audio.blip(880, 0.08, 'square', 0.15); radio('pitRequested'); break;
     case 'pitDenied': audio.blip(220, 0.12, 'sawtooth', 0.15); radio('pitDenied'); break;
@@ -221,7 +265,7 @@ function onWorldEvent(evt, payload = {}) {
     case 'pitWheel':
       if (payload.result === 'miss') {
         audio.wheelGun(3); audio.skid(0.2);
-        audio.playAny(['wearechecking', 'sonotright'], { volume: 0.9, minGap: 2 });
+        say(['wearechecking', 'sonotright'], { volume: 0.9, minGap: 2 });
         radio(payload.timedOut ? 'pitLate' : 'pitMiss', { wheel: WHEEL_NAMES[payload.wheel] });
       } else {
         audio.wheelGun(1);
@@ -235,7 +279,13 @@ function onWorldEvent(evt, payload = {}) {
       else { toast(`${payload.time.toFixed(2)}s`, '#ff3b3b', `${c.label} fitted · ${payload.misses} wheel gun problem${payload.misses > 1 ? 's' : ''}`); radio('pitSlow'); }
       break;
     }
-    case 'rainStart': radio('rainStart'); toast('RAIN', '#7fb2ff'); audio.play('isthatglock', { volume: 0.9, minGap: 30 }); break;
+    case 'rainStart': {
+      const c = COMPOUNDS[world.tyre.compound];
+      toast('RAIN', '#7fb2ff', c.wet === undefined ? `on ${c.label.toLowerCase()}s — think about inters` : `${c.label.toLowerCase()}s like it`);
+      say(['isthatglock'], { volume: 0.9, minGap: 30 });
+      radio('rainStart');
+      break;
+    }
     case 'rainStop': radio('rainStop'); break;
     case 'compound': {
       const c = COMPOUNDS[payload.compound];
@@ -244,15 +294,26 @@ function onWorldEvent(evt, payload = {}) {
       break;
     }
     // --- expansion ---
-    case 'chequered': audio.fanfare(); audio.playAny([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 }); toast('CHEQUERED FLAG', '#fff', `${payload.venue} · +${payload.bonus} · ${GP.points} pts`); radio('chequered', { venue: payload.venue }); break;
+    case 'chequered': audio.fanfare(); say([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 }); toast('CHEQUERED FLAG', '#fff', `${payload.venue} · +${payload.bonus} · ${GP.points} pts`); radio('chequered', { venue: payload.venue }); break;
     case 'venue': setTimeout(() => radio('venue', { venue: payload.venue.name }), 1800); break; // the renderer shows the round card
     case 'night': setTimeout(() => radio('night'), 4500); break;
-    case 'scDeployed': audio.siren(); audio.playAny(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking'); radio('scDeployed'); break;
-    case 'scEnding': radio('scEnding'); break;
-    case 'scRestart': audio.drs(); audio.play('leavemealone', { volume: 0.9, minGap: 30 }); toast('GREEN FLAG', '#2ecc71', 'overtakes pay double'); radio(payload.clean ? 'scClean' : 'scRestart'); break;
+    case 'scDeployed': audio.siren(); say(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking · lift to hold station'); radio('scDeployed'); break;
+    case 'scEnding': audio.scEnding(); toast('SC IN THIS LAP', '#ffd400', 'restart coming — overtakes pay double'); radio('scEnding'); break;
+    case 'scRestart': audio.drs(); say(['leavemealone'], { volume: 0.9, minGap: 30 }); toast('GREEN FLAG', '#2ecc71', 'overtakes pay double'); radio(payload.clean ? 'scClean' : 'scRestart'); break;
     case 'penalty': audio.penalty(); audio.play('penalty', { volume: 0.9, minGap: 5 }); toast('5s PENALTY', '#ff3b3b', 'overtaking under safety car'); radio('penalty'); break;
-    case 'teammate': audio.overtake(); audio.playAny(['multi21', payload.driver?.clip?.overtake, 'itsjames'], { volume: 0.9, minGap: 6 }); toast('MULTI 21', '#e10600'); radio('teammate', { driver: payload.driver }); break;
-    case 'teammateClose': audio.playAny([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 }) || audio.skid(0.25); radio('teammateClose', { driver: payload.driver }); break;
+    case 'teammate': {
+      audio.overtake();
+      const v = say(['multi21', payload.driver?.clip?.overtake, 'itsjames'], { volume: 0.9, minGap: 6 });
+      toast('MULTI 21', '#e10600');
+      if (!clipLine(v)) radio('teammate', { driver: payload.driver });
+      break;
+    }
+    case 'teammateClose': {
+      const v = say([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 });
+      if (!v) audio.skid(0.25);
+      if (!clipLine(v)) radio('teammateClose', { driver: payload.driver });
+      break;
+    }
     case 'tow': radio('tow'); break;
     case 'thunder': audio.play('thunder', { volume: 0.8, minGap: 4 }) || audio.thunder(); if (Math.random() < 0.5) radio('thunder'); break;
     case 'coldTyres': radio('coldTyres'); break;
@@ -422,7 +483,12 @@ function frame(now) {
     const throttleNorm = clamp((world.player.throttle - 0.72) / (1.22 - 0.72), 0, 1);
     audio.updateEngine(dt, world.pit.inLane ? 0.04 : ratio, engineOn, world.pit.inLane ? 0.2 : throttleNorm, world.ers.boosting);
     audio.setMusicState(lerp(96, 172, world.intensity), clamp(world.intensity * 1.15 + (world.raining ? 0.1 : 0) + (world.sc.restartTimer > 0 ? 0.2 : 0) - (world.sc.active ? 0.3 : 0), 0, 1));
-    audio.updateTow(state === 'playing' ? world.tow : 0);
+    // continuous cues that track what is on screen: the tow streaks, the rain, the ERS flames, the flat tyre's sparks
+    const playing = state === 'playing';
+    audio.updateTow(playing ? world.tow : 0);
+    audio.updateRain(playing ? world.rain : 0);
+    audio.updateErs(playing && world.ers.boosting, world.ers.charge / ERS.max);
+    audio.updatePuncture(playing && world.tyre.punctured && !world.pit.inLane, ratio);
   }
   requestAnimationFrame(frame);
 }
