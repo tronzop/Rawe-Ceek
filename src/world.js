@@ -565,12 +565,13 @@ export class World {
 
     // tyre wear
     if (!inPit && !this.tyre.punctured) {
-      this.tyre.wear = Math.min(100, this.tyre.wear + wearDelta(this.tyre.compound, this.speed, dt));
+      const dWear = wearDelta(this.tyre.compound, this.speed, dt);
+      this.tyre.wear = Math.min(100, this.tyre.wear + dWear);
       if (this.tyre.wear >= 100) {
         this.tyre.punctured = true;
         this.run.punctures += 1;
         this.emit('puncture');
-      } else if (this.tyre.wear > TYRES.cliffStart && this.tyre.wear - wearDelta(this.tyre.compound, this.speed, dt) <= TYRES.cliffStart) {
+      } else if (this.tyre.wear > TYRES.cliffStart && this.tyre.wear - dWear <= TYRES.cliffStart) {
         this.emit('tyresHot');
       }
     }

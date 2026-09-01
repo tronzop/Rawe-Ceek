@@ -8,7 +8,7 @@ import { radioLine } from './radio.js';
 import { Leaderboard } from './leaderboard.js';
 import { Career, TROPHIES } from './career.js';
 import { DRIVERS, OPTIONAL_CLIPS, resolveClip } from './grid.js';
-import { clamp, formatDistance, lerp } from './logic.js';
+import { clamp, formatDistance, lerp, positionLabel } from './logic.js';
 
 const $ = (sel) => document.querySelector(sel);
 const canvas = $('#game');
@@ -65,6 +65,7 @@ function startGame() {
   fit();
   hud.radio = null;
   hud.toast = null;
+  radioQueue.length = 0;
   submitted = false;
   state = 'playing';
   show(null);
@@ -149,13 +150,45 @@ function gameOver(payload = {}) {
 }
 
 // ---------- world events → presentation ----------
-function radio(kind, ctx) {
-  const text = radioLine(kind, ctx);
-  if (text) { hud.radio = { text, age: 0 }; audio.radioClick(); }
+// Radio messages queue instead of stomping each other: reactions to a moment
+// (crash, penalty, wheel gun...) preempt whatever is showing; ambient chatter
+// (milestones, weather, the tow) waits its turn so every line can be read.
+const RADIO_PREEMPT = new Set([
+  'crash', 'puncture', 'penalty', 'oil', 'debris', 'scDeployed', 'scRestart', 'scClean',
+  'pitDenied', 'pitRequested', 'pitIn', 'pitGame', 'pitMiss', 'pitLate',
+  'pitRecord', 'pitSlow', 'pitOut', 'teammate', 'teammateClose',
+]);
+const radioQueue = [];
+function radio(kind, ctx = {}) {
+  // give the pit wall eyes: the line picker can react to the car's actual state
+  const c = COMPOUNDS[world.tyre.compound];
+  const wrongTyres = (world.rain > 0.35 && c.wet === undefined) || (world.rain < 0.1 && c.wet !== undefined);
+  const text = radioLine(kind, {
+    ...ctx,
+    wear: world.tyre.wear,
+    onSlicks: c.wet === undefined,
+    onWets: c.wet !== undefined,
+    position: positionLabel(world.overtakes),
+    urgent: world.tyre.punctured || world.tyre.wear > 65 || world.player.damage > 0 || wrongTyres,
+  });
+  if (!text) return;
+  const msg = { kind, text, age: 0, dur: clamp(2.2 + text.length * 0.04, 2.6, 4.6) };
+  if (RADIO_PREEMPT.has(kind) || !hud.radio || hud.radio.age >= hud.radio.dur) {
+    hud.radio = msg;
+    radioQueue.length = 0;
+    audio.radioClick();
+  } else {
+    // one message per kind in the queue; keep it short so nothing arrives stale
+    const i = radioQueue.findIndex((m) => m.kind === kind);
+    if (i >= 0) radioQueue[i] = msg;
+    else radioQueue.push(msg);
+    if (radioQueue.length > 2) radioQueue.shift();
+  }
 }
 function toast(text, color, sub) {
-  hud.toast = { text, color, sub, age: 0 };
+  hud.toast = { text, color, sub, age: 0, dur: sub ? 2.2 : 1.6 };
 }
+const WHEEL_NAMES = { FL: 'front left', FR: 'front right', RL: 'rear left', RR: 'rear right' };
 function onWorldEvent(evt, payload = {}) {
   switch (evt) {
     case 'radio': radio(payload.kind, payload.ctx); break;
@@ -175,10 +208,10 @@ function onWorldEvent(evt, payload = {}) {
     case 'pushing': audio.playAny([Math.random() < 0.4 ? 'hammertime' : null, 'pushing'], { volume: 1, minGap: 10 }); radio('pushing'); break;
     case 'milestone':
       toast(`${payload.km} km`, '#ffd400');
-      radio('milestone');
+      radio('milestone', { km: payload.km });
       if (payload.km % 2 === 0) audio.play('pushing', { volume: 1, minGap: 10 });
       break;
-    case 'tyresHot': radio('tyresHot'); audio.play('bono', { volume: 0.9, minGap: 20 }); break;
+    case 'tyresHot': toast('TYRE CLIFF', '#ffd400', 'grip falling away — box soon'); radio('tyresHot'); audio.play('bono', { volume: 0.9, minGap: 20 }); break;
     case 'puncture': toast('PUNCTURE', '#ff3b3b'); radio('puncture'); audio.playAny(['bono', 'sonotright'], { volume: 0.9, minGap: 3 }); break;
     case 'pitOpen': radio('pitOpen'); audio.play('boxbox', { volume: 0.8, minGap: 20 }); break;
     case 'pitIn': radio('pitIn'); break;
@@ -189,7 +222,7 @@ function onWorldEvent(evt, payload = {}) {
       if (payload.result === 'miss') {
         audio.wheelGun(3); audio.skid(0.2);
         audio.playAny(['wearechecking', 'sonotright'], { volume: 0.9, minGap: 2 });
-        radio(payload.timedOut ? 'pitLate' : 'pitMiss');
+        radio(payload.timedOut ? 'pitLate' : 'pitMiss', { wheel: WHEEL_NAMES[payload.wheel] });
       } else {
         audio.wheelGun(1);
         if (payload.result === 'perfect') audio.blip(1320, 0.07, 'square', 0.18);
@@ -204,9 +237,14 @@ function onWorldEvent(evt, payload = {}) {
     }
     case 'rainStart': radio('rainStart'); toast('RAIN', '#7fb2ff'); audio.play('isthatglock', { volume: 0.9, minGap: 30 }); break;
     case 'rainStop': radio('rainStop'); break;
-    case 'compound': radio('compound', { compound: COMPOUNDS[payload.compound].label.toLowerCase() + 's' }); break;
+    case 'compound': {
+      const c = COMPOUNDS[payload.compound];
+      toast(`${c.label} NEXT`, c.color, 'selected for the next stop');
+      radio('compound', { compound: c.label.toLowerCase() + 's' });
+      break;
+    }
     // --- expansion ---
-    case 'chequered': audio.fanfare(); audio.playAny([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 }); toast('CHEQUERED FLAG', '#fff', `${payload.venue} · +${payload.bonus} · ${GP.points} pts`); radio('chequered'); break;
+    case 'chequered': audio.fanfare(); audio.playAny([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 }); toast('CHEQUERED FLAG', '#fff', `${payload.venue} · +${payload.bonus} · ${GP.points} pts`); radio('chequered', { venue: payload.venue }); break;
     case 'venue': setTimeout(() => radio('venue', { venue: payload.venue.name }), 1800); break; // the renderer shows the round card
     case 'night': setTimeout(() => radio('night'), 4500); break;
     case 'scDeployed': audio.siren(); audio.playAny(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking'); radio('scDeployed'); break;
@@ -238,16 +276,24 @@ const boxBtn = $('#boxBtn');
 boxBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); if (state === 'playing') world.requestPit(); });
 boxBtn.addEventListener('click', (e) => e.preventDefault());
 /** Shows the on-screen BOX button while racing; lit only when the window is open. */
+let boxBtnKey = '';
 function syncBoxButton() {
   const racing = state === 'playing' && !world.gameOver;
-  boxBtn.hidden = !racing || world.pit.inLane;
+  const hidden = !racing || world.pit.inLane;
+  const nc = COMPOUNDS[world.nextCompound];
+  const label = !racing ? '' : world.pit.requested ? 'BOXING…' : world.pit.open ? 'BOX BOX' : 'BOX';
+  const sub = !racing ? '' : world.pit.open ? `fit ${nc.label.toLowerCase()}s · B`
+    : world.pit.cooldown > 0 ? 'fresh tyres — stay out' : `window in ${Math.ceil(world.pitCountdown())}s`;
+  // this runs every frame: only touch the DOM when something actually changed
+  const key = `${hidden}|${world.pit.open}|${world.pit.requested}|${label}|${sub}`;
+  if (key === boxBtnKey) return;
+  boxBtnKey = key;
+  boxBtn.hidden = hidden;
   if (!racing) return;
   boxBtn.classList.toggle('open', world.pit.open);
   boxBtn.classList.toggle('requested', world.pit.requested);
-  const nc = COMPOUNDS[world.nextCompound];
-  boxBtn.querySelector('b').textContent = world.pit.requested ? 'BOXING…' : world.pit.open ? 'BOX BOX' : 'BOX';
-  boxBtn.querySelector('span').textContent = world.pit.open ? `fit ${nc.label.toLowerCase()}s · B`
-    : world.pit.cooldown > 0 ? 'fresh tyres — stay out' : `window in ${Math.ceil(world.pitCountdown())}s`;
+  boxBtn.querySelector('b').textContent = label;
+  boxBtn.querySelector('span').textContent = sub;
 }
 input.on('music', () => { audio.init(); hud.musicOn = audio.toggleMusic(); syncToggles(); });
 input.on('sfx', () => { audio.init(); audio.toggleSfx(); syncToggles(); });
@@ -350,7 +396,7 @@ function frame(now) {
     demoWorld.update(dt, demoInput);
     if (demoWorld.gameOver) { demoWorld = new World(() => {}); demoWorld.resize(renderer.view.width, renderer.view.height); }
     renderer.render(demoWorld, null, dt);
-    boxBtn.hidden = true;
+    syncBoxButton();
   } else {
     const st = {
       ...input.state,
@@ -358,7 +404,14 @@ function frame(now) {
       pointerBoost: input.pointer.active && input.pointer.boost,
     };
     if (state === 'playing' || state === 'over') world.update(dt, st);
-    if (hud.radio) hud.radio.age += dt;
+    if (hud.radio) {
+      hud.radio.age += dt;
+      // current message done: bring up the next queued one
+      if (hud.radio.age >= hud.radio.dur && radioQueue.length) {
+        hud.radio = radioQueue.shift();
+        audio.radioClick();
+      }
+    }
     if (hud.toast) hud.toast.age += dt;
     hud.musicOn = audio.musicOn;
     renderer.render(world, hud, dt);

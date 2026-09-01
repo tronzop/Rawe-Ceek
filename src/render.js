@@ -20,7 +20,6 @@ export class Renderer {
     this.view = { width: 1280, height: 720, scale: 1 };
     this.time = 0;
     this.zoom = 1;
-    this.hudFlash = {};
     // pre-render the kerb strip as a pattern-ish tile for cheapness
     this.kerb = document.createElement('canvas');
     this.kerb.width = 64;
@@ -172,39 +171,62 @@ export class Renderer {
       this.drawSkyline(world.venue, world, W, y0, y1);
     }
 
-    // grandstand: repeating blocks with a crowd noise texture
+    // grandstand: repeating blocks with a crowd noise texture. The crowd is
+    // hundreds of rects, so it is pre-rendered into a strip and only rebuilt
+    // when the day/night blend moves a step.
     const gsTop = world.pitTop * 0.56;
     const gsH = world.pitTop - gsTop;
-    const off = (world.scroll * 0.25) % 220;
     const lit = world.night;
-    for (let x = -off - 220; x < W + 220; x += 220) {
-      ctx.fillStyle = lerpColor('#2b2f3a', '#161923', lit);
-      ctx.fillRect(x, gsTop, 214, gsH);
-      ctx.fillStyle = lerpColor('#3c4150', '#22262f', lit);
-      ctx.fillRect(x, gsTop, 214, 8);
-      // crowd dots (phone torches come out at night)
-      for (let r = 0; r < 4; r++) {
-        for (let c = 0; c < 22; c++) {
-          const seed = ((x / 220) * 97 + r * 13 + c * 7) | 0;
-          const hue = (seed * 47) % 360;
-          const torch = lit > 0.3 && hash(seed) > 0.86;
-          ctx.fillStyle = torch ? `rgba(255,255,230,${lit})` : `hsl(${hue} 35% ${30 + (seed % 3) * 7 - lit * 12}%)`;
-          ctx.fillRect(x + 6 + c * 9.4, gsTop + 14 + r * ((gsH - 18) / 4), 5, 6);
-        }
-      }
-      // banner in the venue accent
-      ctx.fillStyle = '#c8102e';
-      ctx.fillRect(x, world.pitTop - 10, 214, 10);
-      // floodlight masts at night venues
-      if (lit > 0.05) {
-        ctx.globalAlpha = lit;
+    const strip = this.grandstandStrip(gsH, lit);
+    const soff = (world.scroll * 0.25) % strip.width;
+    for (let x = -soff; x < W; x += strip.width) ctx.drawImage(strip.canvas, x, gsTop, strip.width, gsH);
+    // floodlight masts at night venues (fade with the blend, so kept live)
+    if (lit > 0.05) {
+      const off = (world.scroll * 0.25) % 220;
+      ctx.globalAlpha = lit;
+      for (let x = -off - 220; x < W + 220; x += 220) {
         ctx.fillStyle = '#4a4f5c';
         ctx.fillRect(x + 100, y0, 4, gsTop - y0);
         ctx.fillStyle = '#e8ecf5';
         ctx.fillRect(x + 84, y0 - 6, 36, 8);
-        ctx.globalAlpha = 1;
       }
+      ctx.globalAlpha = 1;
     }
+  }
+
+  /** Six grandstand blocks pre-rendered at 2× into one strip, cached per night step. */
+  grandstandStrip(gsH, lit) {
+    const litQ = Math.round(lit * 8);
+    if (this.stand && this.stand.litQ === litQ && this.stand.gsH === gsH) return this.stand;
+    const blocks = 6, bw = 220, res = 2;
+    const canvas = this.stand?.canvas || document.createElement('canvas');
+    canvas.width = blocks * bw * res;
+    canvas.height = Math.max(1, Math.ceil(gsH * res));
+    const k = canvas.getContext('2d');
+    k.setTransform(res, 0, 0, res, 0, 0);
+    const l = litQ / 8;
+    for (let i = 0; i < blocks; i++) {
+      const x = i * bw;
+      k.fillStyle = lerpColor('#2b2f3a', '#161923', l);
+      k.fillRect(x, 0, 214, gsH);
+      k.fillStyle = lerpColor('#3c4150', '#22262f', l);
+      k.fillRect(x, 0, 214, 8);
+      // crowd dots (phone torches come out at night)
+      for (let r = 0; r < 4; r++) {
+        for (let c = 0; c < 22; c++) {
+          const seed = i * 97 + r * 13 + c * 7;
+          const hue = (seed * 47) % 360;
+          const torch = l > 0.3 && hash(seed) > 0.86;
+          k.fillStyle = torch ? `rgba(255,255,230,${l})` : `hsl(${hue} 35% ${30 + (seed % 3) * 7 - l * 12}%)`;
+          k.fillRect(x + 6 + c * 9.4, 14 + r * ((gsH - 18) / 4), 5, 6);
+        }
+      }
+      // banner along the bottom edge
+      k.fillStyle = '#c8102e';
+      k.fillRect(x, gsH - 10, 214, 10);
+    }
+    this.stand = { canvas, litQ, gsH, width: blocks * bw };
+    return this.stand;
   }
 
   /** Far backdrop painters, one per venue.skyline. Strip is [y0, y1], scrolls slowly. */
@@ -876,12 +898,12 @@ export class Renderer {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = n;
-    // floodlight pools on the track
+    // floodlight pools on the track (one shared gradient; it is x-independent)
+    const pool = ctx.createLinearGradient(0, world.pitTop, 0, world.trackBottom);
+    pool.addColorStop(0, 'rgba(255,245,210,0.1)');
+    pool.addColorStop(1, 'rgba(255,245,210,0)');
+    ctx.fillStyle = pool;
     for (let x = -(world.scroll * 0.25 % 220) + 100; x < W + 220; x += 220) {
-      const g = ctx.createLinearGradient(0, world.pitTop, 0, world.trackBottom);
-      g.addColorStop(0, 'rgba(255,245,210,0.1)');
-      g.addColorStop(1, 'rgba(255,245,210,0)');
-      ctx.fillStyle = g;
       ctx.beginPath();
       ctx.moveTo(x, world.pitTop * 0.56);
       ctx.lineTo(x - 260, world.trackBottom);
@@ -1435,9 +1457,22 @@ export class Renderer {
       ctx.fillText(world.sc.phase === 'ending' ? 'SAFETY CAR IN THIS LAP' : 'SAFETY CAR — NO OVERTAKING', W / 2, pad + 77);
     }
 
-    // radio message
-    if (hud.radio && hud.radio.age < 4.5) {
-      const a = clamp(1 - (hud.radio.age - 3.5), 0, 1);
+    // penalty banner: a served penalty should be unmissable, not a corner note
+    if (world.penalty > 0) {
+      const py = pad + 56 + (world.sc.active ? 36 : 0);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#e10600';
+      roundRect(ctx, W / 2 - 150, py, 300, 30, 6);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = `900 14px ${FONT}`;
+      ctx.fillText(`SERVING PENALTY — ${world.penalty.toFixed(1)}s — NO SCORING`, W / 2, py + 20);
+    }
+
+    // radio message: quick fade in, holds for the message's own duration
+    if (hud.radio && hud.radio.age < (hud.radio.dur ?? 4.5)) {
+      const dur = hud.radio.dur ?? 4.5;
+      const a = Math.min(1, hud.radio.age / 0.12) * clamp((dur - hud.radio.age) / 0.6, 0, 1);
       ctx.globalAlpha = a;
       ctx.textAlign = 'left';
       ctx.font = `bold 16px ${FONT}`;
@@ -1456,9 +1491,10 @@ export class Renderer {
     }
 
     // toast (big centre text: milestones etc.)
-    if (hud.toast && hud.toast.age < 1.6) {
+    if (hud.toast && hud.toast.age < (hud.toast.dur ?? 1.6)) {
       const t = hud.toast.age;
-      const a = t < 0.2 ? t / 0.2 : t > 1.2 ? 1 - (t - 1.2) / 0.4 : 1;
+      const dur = hud.toast.dur ?? 1.6;
+      const a = t < 0.2 ? t / 0.2 : t > dur - 0.4 ? (dur - t) / 0.4 : 1;
       ctx.globalAlpha = clamp(a, 0, 1);
       ctx.textAlign = 'center';
       ctx.font = `900 ${34 + Math.min(1, t * 4) * 6}px ${FONT}`;
@@ -1503,11 +1539,21 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// Blends run over a few seconds but are sampled every frame for every palette
+// key, so results are memoised on a lightly quantised t (invisible at 200 steps).
+const colorCache = new Map();
 function lerpColor(a, b, t) {
   if (a === b || t <= 0) return a.startsWith('#') ? rgbString(hex(a)) : a;
-  const pa = hex(a), pb = hex(b);
-  const c = pa.map((v, i) => Math.round(lerp(v, pb[i], t)));
-  return rgbString(c);
+  const q = Math.min(200, Math.round(t * 200));
+  const key = `${a}|${b}|${q}`;
+  let out = colorCache.get(key);
+  if (!out) {
+    const pa = hex(a), pb = hex(b);
+    out = rgbString(pa.map((v, i) => Math.round(lerp(v, pb[i], q / 200))));
+    if (colorCache.size > 4000) colorCache.clear();
+    colorCache.set(key, out);
+  }
+  return out;
 }
 const rgbString = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
 function hex(h) {
