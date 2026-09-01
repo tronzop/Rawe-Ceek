@@ -208,6 +208,48 @@ export const SAFETY_CAR_TEAM = { name: 'Safety Car', primary: '#c9ccd2', accent:
 
 Object.assign(STORAGE_KEYS, { career: 'rawe-ceek:career' });
 
+/**
+ * The start. You line up at the back of a staggered grid, five red lights come on one
+ * by one, hold, and go out. The opening seconds are forgiving: nothing spawns and a
+ * touch with a rival costs bodywork, not the race.
+ */
+export const START = {
+  gridCars: 12, // rivals lined up ahead of you
+  spacing: 96, // px between grid slots along the track
+  preLights: 1.4, // seconds sitting on the grid before the first light
+  lights: 5,
+  lightInterval: 0.9, // seconds between each red light
+  hold: { min: 0.3, max: 1.4 }, // random pause with all five lit before they go out
+  launchSeconds: 10, // opening phase: no hazards spawn, contact with rivals is survivable
+  launchAccel: 1.7, // how quickly you get up to speed off the line (normal is 2.5)
+  rivalAccel: { min: 1.2, max: 2.6 }, // spread of rival launches (some bog down, some rocket)
+  rivalLaunch: { slow: [-210, -70], fast: [30, 110] }, // px/s relative to you once everyone is up to speed
+  fastShare: 0.35, // share of the grid that pulls away instead of coming back to you
+  launchBog: [-30, 50], // px/s per-car wobble in the first moment off the line (a few bog down, most get away)
+  spreadOver: 0.7, // fraction of launchSeconds over which the pack spreads from a unit to its settled speeds
+  reactionWindow: 0.35, // push / boost within this of lights out = great start
+  reactionBonus: 50,
+  overtakeBonus: 30, // grid cars are slow traffic off the line: worth less than a real overtake
+};
+
+/**
+ * Damageable parts, 0..100 each. The front wing takes debris and nose-to-tail
+ * contact and costs top speed; the floor takes side-by-side rubs and costs grip.
+ * The pit crew fixes both during a stop. A part already at 100 cannot take another hit.
+ */
+export const DAMAGE = {
+  wingPerDebris: 25,
+  wingPerHit: [25, 45], // nose into the car ahead
+  floorPerRub: [15, 30], // alongside contact, or a car running into your rear
+  wingThrottleLoss: 0.24, // top-speed loss at 100 % wing damage
+  floorGripLoss: 0.22, // grip loss at 100 % floor damage
+  maxClosing: 150, // px/s: a faster frontal impact than this outside the launch is a crash
+  frontalDepth: 18, // px: a deeper frontal overlap than this outside the launch is a crash
+  needsStop: 30, // total damage from which the wall calls you in
+  launchScale: 0.5, // contact during the launch costs this fraction of the usual bodywork
+  shove: 160, // px/s the car you hit is pushed on for the moment after contact
+};
+
 /** Pit-stop mini-game: fire the wheel gun when the sweeping marker is in the zone. */
 export const PITGAME = {
   wheels: ['FL', 'FR', 'RL', 'RR'],

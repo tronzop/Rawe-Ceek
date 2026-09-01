@@ -1,5 +1,5 @@
 // Bootstrap: wires input, world, renderer, audio and the DOM screens together.
-import { COMPOUNDS, COMPOUND_ORDER, ERS, GP, SPEED, TYRES, VENUES, WORLD } from './config.js';
+import { COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, SPEED, TYRES, VENUES, WORLD } from './config.js';
 import { Input } from './input.js';
 import { World } from './world.js';
 import { Renderer } from './render.js';
@@ -39,7 +39,7 @@ const assetsAvailable = fetch('/api/assets', { cache: 'no-store' }).then((r) => 
 audio.setAvailable(assetsAvailable);
 const renderer = new Renderer(canvas, assets);
 let career = Career.load();
-const hud = { radio: null, toast: null, best: Leaderboard.best(), musicOn: audio.musicOn, points: career.points };
+const hud = { radio: null, toast: null, damage: null, best: Leaderboard.best(), musicOn: audio.musicOn, points: career.points };
 
 let state = 'title'; // title | playing | paused | over
 let world = new World(onWorldEvent);
@@ -65,14 +65,14 @@ function startGame() {
   fit();
   hud.radio = null;
   hud.toast = null;
+  hud.damage = null;
   radioQueue.length = 0;
   submitted = false;
   state = 'playing';
   show(null);
   audio.resume();
-  audio.startMusic();
-  // Crofty if the clip is loaded (subtitled), otherwise the pit wall's radio check
-  if (!clipLine(say(['lightsout'], { volume: 1 }))) radio('start');
+  // the band waits for the lights; on the grid it is just the engine and the wall
+  radio('gridStart');
   $('#gameOverScreen').classList.remove('revealed');
 }
 function pause() {
@@ -166,7 +166,7 @@ function wrongTyres() {
 }
 /** Does the car actually need the next stop (wear, puncture, damage, weather)? */
 function carNeedsStop() {
-  return world.tyre.punctured || world.tyre.wear > TYRES.cliffStart || world.player.damage > 0 || wrongTyres();
+  return world.tyre.punctured || world.tyre.wear > TYRES.cliffStart || world.damage >= DAMAGE.needsStop || wrongTyres();
 }
 function radio(kind, ctx = {}) {
   // give the pit wall eyes: the line picker can react to the car's actual state
@@ -241,7 +241,27 @@ function onWorldEvent(evt, payload = {}) {
       break;
     }
     case 'oil': say(['iamstupid', 'sonotright'], { volume: 0.9, minGap: 3 }); audio.skid(0.4); radio('oil'); break;
-    case 'debris': audio.skid(0.2); radio('debris'); break;
+    // --- the start ---
+    case 'light': audio.blip(392, 0.14, 'square', 0.13); break;
+    case 'lightsOut':
+      audio.startMusic();
+      audio.blip(784, 0.25, 'square', 0.16);
+      toast('LIGHTS OUT', '#2ecc71', payload.jumped ? 'jump start — no bonus' : 'go go go');
+      // Crofty if the clip is loaded (subtitled), otherwise the pit wall
+      if (!clipLine(say(['lightsout'], { volume: 1 }))) radio('start');
+      break;
+    case 'jumpStart': audio.blip(220, 0.15, 'sawtooth', 0.14); radio('jumpStart'); break;
+    case 'greatStart': audio.overtake(); toast('GREAT START', '#2ecc71', `${Math.round(payload.reaction * 1000)} ms reaction · +50`); radio('greatStart'); break;
+    case 'slowStart': radio('slowStart'); break;
+    // --- damage ---
+    case 'contact':
+      hud.damage = { age: 0, part: payload.part, lost: payload.lost };
+      if (payload.cause === 'debris') { audio.skid(0.2); radio('debris'); break; }
+      audio.crunch(0.3 + payload.amount / 100);
+      audio.skid(0.3);
+      if (payload.lost) toast(payload.part === 'wing' ? 'FRONT WING GONE' : 'FLOOR DESTROYED', '#ff3b3b', 'one more hit retires the car — box for repairs');
+      radio('contact', { part: payload.part, lost: payload.lost, driver: payload.driver });
+      break;
     case 'drs': audio.drs(); toast('DRS', '#2ecc71', `+${ERS.drsRefill} battery`); break;
     case 'pushing': say([Math.random() < 0.4 ? 'hammertime' : null, 'pushing'], { volume: 1, minGap: 10 }, 'pushing'); break;
     case 'milestone':
@@ -435,8 +455,14 @@ function escapeHtml(s) {
 refreshLeaderboard();
 
 // ---------- main loop ----------
-let demoWorld = new World(() => {});
-demoWorld.resize(renderer.view.width, renderer.view.height);
+/** Attract-mode world, laid out for the real view size so the grid lines up. */
+function newDemoWorld() {
+  const w = new World(() => {});
+  w.resize(renderer.view.width, renderer.view.height);
+  w.reset();
+  return w;
+}
+let demoWorld = newDemoWorld();
 const demoInput = { up: false, down: false, left: false, right: false, boost: false, pointerY: null };
 
 function frame(now) {
@@ -455,7 +481,7 @@ function frame(now) {
     }
     demoWorld.hazards = demoWorld.hazards.filter((h) => !(h.type === 'rival' && h.fromBehind));
     demoWorld.update(dt, demoInput);
-    if (demoWorld.gameOver) { demoWorld = new World(() => {}); demoWorld.resize(renderer.view.width, renderer.view.height); }
+    if (demoWorld.gameOver) demoWorld = newDemoWorld();
     renderer.render(demoWorld, null, dt);
     syncBoxButton();
   } else {
@@ -474,6 +500,7 @@ function frame(now) {
       }
     }
     if (hud.toast) hud.toast.age += dt;
+    if (hud.damage) hud.damage.age += dt;
     hud.musicOn = audio.musicOn;
     renderer.render(world, hud, dt);
     syncBoxButton();

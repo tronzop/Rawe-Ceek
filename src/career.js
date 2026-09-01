@@ -6,7 +6,9 @@ export const TROPHIES = [
   { id: 'lightsout', name: 'Lights out', desc: 'Start your first race.', check: (c) => c.races >= 1 },
   { id: 'chequered', name: 'Chequered flag', desc: 'Complete a Grand Prix.', check: (c, r) => r.gps >= 1 },
   { id: 'triple', name: 'Triple header', desc: 'Complete three Grands Prix in one run.', check: (c, r) => r.gps >= 3 },
-  { id: 'season', name: 'Full season', desc: 'Complete all eight venues in one run.', check: (c, r) => r.gps >= 8 },
+  { id: 'season', name: 'Full season', desc: 'Complete eight Grands Prix in one run.', check: (c, r) => r.gps >= 8 },
+  { id: 'reaction', name: 'Lights out and away we go', desc: 'A great start: on the throttle within a third of a second of the lights.', check: (c, r) => r.greatStarts >= 1 },
+  { id: 'rubbing', name: 'Rubbing is racing', desc: 'Survive five contacts with other cars in one run.', check: (c, r) => r.contacts >= 5 },
   { id: 'animal', name: 'Pushing like an animal', desc: 'Get told off for pushing three times in one run.', check: (c, r) => r.pushes >= 3 },
   { id: 'bono', name: 'Bono, my tyres are gone', desc: 'Suffer a puncture.', check: (c, r) => r.punctures >= 1 },
   { id: 'undercut', name: 'The undercut works', desc: 'Make three pit stops in one run.', check: (c, r) => r.stops >= 3 },
@@ -31,7 +33,7 @@ export const EMPTY_CAREER = () => ({
 export const EMPTY_RUN = () => ({
   gps: 0, pushes: 0, punctures: 0, stops: 0, slowStops: 0, rainTime: 0, nightTime: 0, scClean: 0, scPeriods: 0,
   penalties: 0, teammatePasses: 0, legendPasses: 0, towEnergy: 0, overtakes: 0, score: 0, metres: 0,
-  recordStops: 0, cleanStops: 0, perfectStops: 0,
+  recordStops: 0, cleanStops: 0, perfectStops: 0, contacts: 0, repairs: 0, greatStarts: 0,
 });
 
 const load = () => {

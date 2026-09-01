@@ -6,6 +6,15 @@ import { pick } from './logic.js';
 const LINES = {
   closeCall: ['Careful, careful.', 'That was close.', 'Leave the space!', '{d} is not happy about that.', 'Stewards are looking at you and {d}.', 'You have to leave the space!'],
   start: ['Radio check, radio check.', 'Rawe Ceek, baby.', 'Push now, push now.', 'Plan A. For now.', 'Lights out and away we go.', 'It is race week. Rawe ceek.', 'Remember: we are the team. We are checking.'],
+  gridStart: ['Formation lap done. Hold for the lights.', 'P20. It can only get better. Wait for the lights.', 'Clutch in. Watch the lights, not the car ahead.', 'Radio check. Lights soon. Do not jump it.'],
+  jumpStart: ['Hold, hold! The lights are still on.', 'That was a jump start. No bonus for you.', 'Easy. Wait for them to go out.'],
+  greatStart: ['Great start! Great start!', 'Beautiful launch. Keep it clean through the pack.', 'That is how you start a race.'],
+  slowStart: ['Wake up! Go go go!', 'The lights are out. Push!', 'You fell asleep on the grid.'],
+  // contact you survived (see the DAMAGE model)
+  wingHit: ['Front wing damage. We are checking.', 'You touched {d}. Wing is damaged.', 'Careful with the nose. That is wing damage.', 'Contact with {d}. Front wing, checking.'],
+  floorHit: ['Contact with {d}. Floor damage.', 'Side to side with {d}. Some floor damage.', 'Rubbing is racing. Floor is damaged.', 'You have damage on the floor. Grip will be down.'],
+  wingLost: ['The front wing is gone! Box for a new nose.', 'Wing is off. You cannot take another hit. Box.', 'No front wing. Bring it in at the next window.'],
+  floorLost: ['The floor is destroyed. One more touch and we are out.', 'Floor is gone. Box, box, before anything else happens.'],
   overtake: ['Good move.', 'DRS was available.', 'Nice, keep it up.', 'Clean overtake.', 'That is {d} behind you now.', 'Good job on {d}.', 'Get in there!', 'Fantastic, fantastic.'],
   oil: ['Oil on track, oil on track.', 'You are on the oil!', 'Yellow flag, sector 2.'],
   debris: ['Front wing damage, checking.', 'Some debris on your car.', 'We are checking.'],
@@ -56,6 +65,7 @@ const LINES = {
 // Events whose line group depends on what is actually happening in the car.
 const VARIANTS = {
   pitOpen: (ctx) => (ctx.urgent ? 'pitOpenUrgent' : 'pitOpen'),
+  contact: (ctx) => (ctx.lost ? (ctx.part === 'wing' ? 'wingLost' : 'floorLost') : ctx.part === 'wing' ? 'wingHit' : 'floorHit'),
   milestone: (ctx) => (ctx.wear > 60 ? 'milestoneWorn' : 'milestone'),
   rainStart: (ctx) => (ctx.onSlicks ? 'rainStartSlicks' : 'rainStart'),
   rainStop: (ctx) => (ctx.onWets ? 'rainStopWets' : 'rainStop'),

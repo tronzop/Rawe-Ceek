@@ -2,12 +2,13 @@
 // It knows nothing about the canvas or audio; it reports interesting moments
 // through `emit(event, payload)` so the presentation layer can react.
 import {
-  COMPOUNDS, COMPOUND_ORDER, ERS, GP, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SCORING, SCORING_EXTRA, SLIPSTREAM,
-  SPAWN, SPEED, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WEATHER, WORLD,
+  COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SCORING, SCORING_EXTRA, SLIPSTREAM,
+  SPAWN, SPEED, START, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WEATHER, WORLD,
 } from './config.js';
 import {
   baseSpeed, clamp, gpsCompleted, gripFactor, lerp, nextPitWindowIn, pick, pickHazard, pitWindowOpen, rand, rectCircleGap,
   rectGap, playerSpeed, spawnInterval, tempGrip, towFactor, venueIndexAt, wearDelta, judgeWheel, sweepPos, stopSummary,
+  contactOutcome, damageEffects, lightsFullAt, lightsLit, totalDamage,
 } from './logic.js';
 import { EMPTY_RUN } from './career.js';
 import { DRIVERS, LEGEND_BONUS, LEGEND_CHANCE, TEAMS, teamOf } from './grid.js';
@@ -50,7 +51,7 @@ export class World {
     this.distance = 0; // metres
     this.score = 0;
     this.bonus = 0;
-    this.speed = SPEED.base;
+    this.speed = 0; // sitting on the grid
     this.scroll = 0;
     this.gameOver = false;
     this.gameOverTime = 0;
@@ -82,10 +83,13 @@ export class World {
       spin: 0, // seconds of remaining spin from oil
       angle: 0,
       frame: 0,
-      damage: 0, // debris hits reduce max throttle a little
+      parts: { wing: 0, floor: 0 }, // damage 0..100 per part (see DAMAGE)
       grace: 0, // seconds of invulnerability after rejoining from the pits
       alive: true,
     };
+    // the start: grid → lights → go. `launch` counts down the forgiving opening phase.
+    this.start = { phase: 'grid', t: 0, lit: 0, hold: rand(START.hold.min, START.hold.max), launch: 0, sinceGo: 0, reaction: null, jumped: false, slots: [] };
+    this.packV = 0; // reference speed of the launching field (a neutral-throttle launch), rivals track it
     // calendar
     this.venueIndex = 0;
     this.venuePrev = 0;
@@ -104,12 +108,39 @@ export class World {
     this.radioLog = [];
     this.stats = { maxSpeed: 0 };
     this.run = EMPTY_RUN();
+    this.placeGrid();
+  }
+
+  /** Lines the field up ahead of you: two staggered columns, you at the back of the inside one. */
+  placeGrid() {
+    const p = this.player;
+    const w = PLAYER.width * 0.92;
+    const h = PLAYER.height * 0.92;
+    const lanes = [this.trackTop + h * 0.5 + 28, this.trackBottom - h * 0.5 - 28];
+    p.y = lanes[1];
+    this.start.slots = [{ x: p.x, y: p.y }];
+    // everyone on the current grid once, your team-mate somewhere in the pack
+    const field = [...MODERN].sort(() => Math.random() - 0.5).slice(0, START.gridCars - 1);
+    field.splice(Math.floor(rand(1, START.gridCars - 1)), 0, pick(FERRARI));
+    field.forEach((driver, i) => {
+      const slot = i + 1;
+      const x = p.x + slot * START.spacing;
+      const y = lanes[(slot + 1) % 2] + rand(-5, 5); // staggered: the car directly ahead of you is two slots up
+      this.start.slots.push({ x, y });
+      this.hazards.push({
+        id: nextId++, type: 'rival', x, y, w, h, rel: 0, vy: 0, scPace: 0, team: teamOf(driver), driver,
+        fromBehind: false, weave: false, weavePhase: rand(0, 6.28), passed: false, frame: 0, defend: false, brake: 0,
+        grid: true, v: 0, // absolute speed while the field launches
+      });
+    });
   }
 
   // ----- public read helpers -----
   get venue() { return VENUES[this.venueIndex]; }
   get prevVenue() { return VENUES[this.venuePrev]; }
-  get grip() { return gripFactor(this.tyre.compound, this.tyre.wear, this.rain) * tempGrip(this.tyre.temp); }
+  get grip() { return gripFactor(this.tyre.compound, this.tyre.wear, this.rain) * tempGrip(this.tyre.temp) * damageEffects(this.player.parts).gripMul; }
+  get damage() { return totalDamage(this.player.parts); }
+  get racing() { return this.start.phase === 'go'; }
   get kmh() { return Math.round(this.speed * SPEED.kmhPerPx); }
   get intensity() { return clamp((this.speed - SPEED.base) / (SPEED.max - SPEED.base), 0, 1); }
   get playerRect() {
@@ -175,6 +206,7 @@ export class World {
       return;
     }
     this.elapsed += dt;
+    this.updateStart(dt, input);
     // "box box" cinematic: the world drops into slow motion while the car peels off / rejoins
     const cineTarget = this.pit.requested || (this.pit.inLane && (this.pit.phase === 'entry' || this.pit.phase === 'merge')) ? 1 : 0;
     if (this.player.grace > 0) this.player.grace = Math.max(0, this.player.grace - dt);
@@ -209,6 +241,48 @@ export class World {
     if (ms > this.milestone) {
       this.milestone = ms;
       this.emit('milestone', { km: ms });
+    }
+  }
+
+  // ----- the start -----
+  updateStart(dt, input) {
+    const s = this.start;
+    const go = input.right || input.boost || input.pointerBoost;
+    if (s.phase === 'go') {
+      if (s.launch > 0) s.launch = Math.max(0, s.launch - dt);
+      s.sinceGo += dt;
+      this.packV += (baseSpeed(this.elapsed) - this.packV) * Math.min(1, dt * START.launchAccel);
+      if (s.reaction === null) {
+        if (go) {
+          s.reaction = s.sinceGo;
+          if (!s.jumped && s.reaction <= START.reactionWindow) {
+            this.bonus += START.reactionBonus;
+            this.run.greatStarts += 1;
+            this.addPopup(this.player.x, this.player.y - 50, `+${START.reactionBonus} GREAT START`, '#2ecc71');
+            this.emit('greatStart', { reaction: s.reaction });
+          }
+        } else if (s.sinceGo > 1.2) { s.reaction = s.sinceGo; this.emit('slowStart'); }
+      }
+      return;
+    }
+    s.t += dt;
+    const lit = lightsLit(s.t - START.preLights);
+    if (lit > s.lit) { s.lit = lit; this.emit('light', { n: lit }); }
+    // going for it while the lights are still on: no penalty, but the wall notices and the bonus is gone
+    if (!s.jumped && s.lit > 0 && go) { s.jumped = true; this.emit('jumpStart'); }
+    if (s.lit >= START.lights && s.t - START.preLights >= lightsFullAt() + s.hold) {
+      s.phase = 'go';
+      s.launch = START.launchSeconds;
+      this.spawnTimer = 1.5; // (spawns are held off for the whole launch anyway; this is the gap after it)
+      for (const hz of this.hazards) {
+        if (!hz.grid) continue;
+        const fast = Math.random() < START.fastShare;
+        hz.fast = fast;
+        hz.launchRel = fast ? rand(...START.rivalLaunch.fast) : rand(...START.rivalLaunch.slow);
+        hz.launchAccel = rand(START.rivalAccel.min, START.rivalAccel.max);
+        hz.launchBog = rand(...START.launchBog); // how well this one gets off the line in the first moment
+      }
+      this.emit('lightsOut', { jumped: s.jumped });
     }
   }
 
@@ -405,7 +479,8 @@ export class World {
           if (g.hold <= 0) {
             const s = stopSummary(g.results);
             this.tyre = { compound: this.nextCompound, wear: 0, punctured: false, temp: 0 };
-            this.player.damage = 0;
+            if (totalDamage(this.player.parts) > 0) this.run.repairs += 1;
+            this.player.parts = { wing: 0, floor: 0 }; // new nose and floor go on with the tyres
             pit.stops += 1;
             pit.slow = !s.clean;
             pit.stopFor = s.time;
@@ -460,11 +535,11 @@ export class World {
     let targetThrottle = 1;
     if (input.right) targetThrottle = PLAYER.throttleRange.max;
     if (input.left) targetThrottle = PLAYER.throttleRange.min;
-    targetThrottle -= p.damage * 0.08;
+    targetThrottle -= damageEffects(p.parts).throttleLoss;
     p.throttle += (targetThrottle - p.throttle) * Math.min(1, dt * PLAYER.throttleLerp);
 
     // "pushing like an animal": hold full throttle for a few seconds
-    if (input.right && !inPit) {
+    if (input.right && !inPit && this.racing) {
       this.pushTimer += dt;
       if (this.pushTimer > 4) {
         this.pushTimer = -18; // cooldown before it can trigger again
@@ -477,7 +552,7 @@ export class World {
     // slipstream: the closest rival straight ahead gives a tow
     this.tow = 0;
     this.towRival = null;
-    if (!inPit) {
+    if (!inPit && this.racing) {
       const nose = p.x + PLAYER.width / 2;
       for (const hz of this.hazards) {
         if (hz.type !== 'rival') continue;
@@ -495,8 +570,8 @@ export class World {
       }
     }
 
-    // ERS / boost (not under the safety car)
-    const wantBoost = (input.boost || input.pointerBoost) && !inPit && p.spin <= 0 && !this.sc.active;
+    // ERS / boost (not under the safety car, not on the grid)
+    const wantBoost = (input.boost || input.pointerBoost) && !inPit && p.spin <= 0 && !this.sc.active && this.racing;
     if (wantBoost && (this.ers.boosting ? this.ers.charge > 0 : this.ers.charge > ERS.minToEngage)) {
       this.ers.boosting = true;
       this.ers.charge = Math.max(0, this.ers.charge - ERS.drainPerSecond * dt);
@@ -525,12 +600,13 @@ export class World {
       target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.speedCap * lerp(SAFETY_CAR.liftFloor, 1, lift));
     }
     if (this.penalty > 0 && !inPit) target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.penaltyCap);
-    const accel = target > this.speed ? 2.5 : 4.5;
+    if (!this.racing) target = 0; // lights are on
+    const accel = target > this.speed ? (this.start.launch > 0 ? START.launchAccel : 2.5) : 4.5;
     this.speed += (target - this.speed) * Math.min(1, dt * accel);
 
     // vertical movement (grip-limited) — pointer overrides keys when active
-    // (steering is handed to the pit-entry glide once you have called for the box)
-    if (!inPit && !this.pit.requested) {
+    // (steering is handed to the pit-entry glide once you have called for the box; none on the grid)
+    if (!inPit && !this.pit.requested && this.racing) {
       let dir = 0;
       if (input.up) dir -= 1;
       if (input.down) dir += 1;
@@ -595,8 +671,13 @@ export class World {
     if (this.ers.boosting && Math.random() < dt * 40) {
       this.particles.push({ kind: 'flame', x: rearX + 6, y: p.y + rand(-3, 3), vx: -this.speed * 0.8 - 150, vy: rand(-20, 20), r: rand(3, 6), life: 0.18, age: 0 });
     }
-    // titanium skid-block sparks at high speed on a dry track
-    if (!inPit && this.rain < 0.3 && this.speed > SPEED.max * 0.72 && Math.random() < dt * 60 * this.intensity) {
+    // a wing hanging off, or gone: it drags along the track and throws sparks off the nose
+    if (!inPit && p.parts.wing >= 50 && this.speed > SPEED.base * 0.5 && Math.random() < dt * (p.parts.wing >= 100 ? 45 : 12)) {
+      this.spawnSpark(p.x + PLAYER.width * 0.45, p.y + PLAYER.height * 0.4, 1);
+    }
+    // titanium skid-block sparks at high speed on a dry track (a damaged floor scrapes sooner and more)
+    const floorScrape = 1 + p.parts.floor / 40;
+    if (!inPit && this.rain < 0.3 && this.speed > SPEED.max * (0.72 / floorScrape) && Math.random() < dt * 60 * this.intensity * floorScrape) {
       this.particles.push({
         kind: 'spark', x: p.x + rand(-PLAYER.width * 0.35, PLAYER.width * 0.1), y: p.y + PLAYER.height * 0.45,
         vx: -this.speed * 0.9 - rand(50, 200), vy: rand(-40, 60), r: rand(1, 2.2), life: rand(0.15, 0.4), age: 0,
@@ -610,8 +691,8 @@ export class World {
 
   // ----- hazards -----
   updateSpawns(dt) {
-    // no new hazards while you are on the way in, in the lane, or in the grace moment after rejoining
-    if (this.pit.inLane || this.pit.requested || this.player.grace > 0) return;
+    // no new hazards on the grid or during the launch, while you are on the way in, in the lane, or in the grace moment after rejoining
+    if (!this.racing || this.start.launch > 0 || this.pit.inLane || this.pit.requested || this.player.grace > 0) return;
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
       if (this.sc.active) {
@@ -706,7 +787,28 @@ export class World {
         // bunched rivals hold safety-car pace until the green flag, then they are slow traffic
         if (hz.scPace) hz.rel = this.sc.active ? hz.scPace * baseSpeed(this.elapsed) * SAFETY_CAR.speedCap - scrollV : -rand(60, 140);
         if (hz.scPace && !this.sc.active) hz.scPace = 0;
-        hz.x += (hz.rel - scrollV) * dt;
+        // Grid cars. `rel` is a hazard's speed along the track (screen velocity = rel - scrollV), so
+        // the pack gets away together by tracking packV (a neutral-throttle launch, ≈ your scroll
+        // speed) with a small per-car bog in the first moment, then spreads out over the opening
+        // phase: fast starters settle a little above the pack and pull away, the rest fade back to
+        // ordinary traffic speeds. After that they are ordinary traffic at whatever they settled to.
+        if (hz.grid && this.racing) {
+          if (this.start.launch > 0) {
+            const t = clamp(this.start.sinceGo / (START.launchSeconds * START.spreadOver), 0, 1);
+            const spread = t * t * (3 - 2 * t);
+            const bog = hz.launchBog * Math.max(0, 1 - this.start.sinceGo / 1.5);
+            const settled = hz.fast ? this.packV + hz.launchRel : hz.launchRel;
+            const target = this.packV * (1 - spread) + settled * spread + bog;
+            hz.v += (target - hz.v) * Math.min(1, dt * hz.launchAccel * 2);
+            hz.rel = hz.v;
+          } else {
+            hz.grid = false;
+            hz.weave = Math.random() < 0.4;
+            hz.defend = hz.x > p.x && !hz.team.teammate && Math.random() < RIVAL_AI.defendChance;
+          }
+        }
+        if (hz.contactCd > 0) hz.contactCd -= dt;
+        hz.x += (hz.rel + (hz.contactCd > 0 && hz.shoved ? DAMAGE.shove : 0) - scrollV) * dt;
         if (hz.type === 'rival') {
           if (hz.weave) {
             hz.weavePhase += dt * 1.6;
@@ -764,6 +866,7 @@ export class World {
     let pts = SCORING.overtake;
     let label = `+${pts}`;
     let color = '#ffd400';
+    if (hz.grid) { pts = START.overtakeBonus; label = `+${pts} START`; color = '#c9ced9'; }
     if (this.sc.restartTimer > 0) { pts *= SCORING_EXTRA.restartMultiplier; label = `+${pts} RESTART`; color = '#2ecc71'; }
     if (hz.team.teammate) { pts += TEAMMATE.bonus; label = `+${pts} MULTI 21`; color = '#e10600'; this.run.teammatePasses += 1; }
     if (hz.driver?.legend) { pts += LEGEND_BONUS; label = `+${pts} LEGEND`; color = '#d4af37'; this.run.legendPasses = (this.run.legendPasses || 0) + 1; }
@@ -798,16 +901,27 @@ export class World {
 
     switch (hz.type) {
       case 'tyre':
-      case 'rival':
       case 'stranded':
         this.crash(hz);
         break;
+      case 'rival': {
+        if (hz.contactCd > 0) break; // still sliding along the same car: one hit per touch
+        const rect = { x: hz.x - hz.w / 2, y: hz.y - hz.h / 2, w: hz.w, h: hz.h };
+        const ox = Math.min(prect.x + prect.w, rect.x + rect.w) - Math.max(prect.x, rect.x);
+        const oy = Math.min(prect.y + prect.h, rect.y + rect.h) - Math.max(prect.y, rect.y);
+        const ahead = hz.x > p.x;
+        // how fast the two cars were coming together (screen velocity of the rival is rel - speed)
+        const closing = Math.max(0, ahead ? this.speed - hz.rel : hz.rel - this.speed);
+        const outcome = contactOutcome({ ahead, ox, oy, h: prect.h, closing, launch: !this.racing || this.start.launch > 0, parts: p.parts });
+        if (outcome === 'crash') this.crash(hz);
+        else this.contact(hz, outcome, { ahead, oy, sideRub: oy < prect.h * 0.5 });
+        break;
+      }
       case 'debris':
         hz.dead = true;
-        p.damage = Math.min(3, p.damage + 1);
+        this.hurt('wing', DAMAGE.wingPerDebris, { driver: null, cause: 'debris' });
         this.shake = 0.5;
         this.spawnSpark(hz.x, hz.y, 10);
-        this.emit('debris', { damage: p.damage });
         break;
       case 'oil':
         if (!hz.hit) {
@@ -831,6 +945,45 @@ export class World {
       default:
         break;
     }
+  }
+
+  /** Contact with a rival that the car survives: bodywork, a shove, sparks and carbon. */
+  contact(hz, part, { ahead, oy, sideRub }) {
+    const p = this.player;
+    // the opening is forgiving twice over: every touch is survivable, and it costs half the bodywork
+    const amount = (part === 'wing' ? rand(...DAMAGE.wingPerHit) : rand(...DAMAGE.floorPerRub)) * (this.start.launch > 0 ? DAMAGE.launchScale : 1);
+    hz.contactCd = 0.7;
+    hz.shoved = false;
+    if (ahead && !sideRub) {
+      // nose into their gearbox: you lose momentum, they get punted on, their brake light comes on
+      this.speed *= 0.72;
+      hz.shoved = true;
+      hz.brake = 1;
+      // a grid car you have shoved gets going: it settles a little above the pack and pulls away,
+      // instead of fading straight back into your nose for a second hit
+      if (hz.grid) { hz.fast = true; hz.launchRel = rand(20, 60); }
+    } else {
+      // alongside: both cars get pushed apart
+      const dir = Math.sign(p.y - hz.y) || 1;
+      p.y += dir * (oy * 0.6 + 3);
+      p.vy = dir * 140;
+      hz.y -= dir * (oy * 0.6 + 3);
+      this.speed *= 0.93;
+    }
+    for (let i = 0; i < 6; i++) {
+      this.particles.push({ kind: 'carbon', x: p.x + (ahead ? PLAYER.width * 0.4 : 0), y: p.y + (sideRub ? -Math.sign(p.y - hz.y) * PLAYER.height * 0.4 : 0), vx: rand(-150, 200), vy: rand(-260, -40), r: rand(2, 5), life: rand(0.5, 1.1), age: 0, spin: rand(0, 6) });
+    }
+    this.spawnSpark(p.x + (ahead ? PLAYER.width * 0.45 : -PLAYER.width * 0.3), p.y, 8);
+    this.run.contacts += 1;
+    this.hurt(part, amount, { driver: hz.driver, cause: 'contact' });
+  }
+  /** Applies damage to a part and reports it (with `lost` when the part just reached 100). */
+  hurt(part, amount, ctx) {
+    const p = this.player;
+    const before = p.parts[part];
+    p.parts[part] = Math.min(100, before + amount);
+    this.shake = Math.max(this.shake, 0.35 + amount / 120);
+    this.emit('contact', { ...ctx, part, amount, value: p.parts[part], total: this.damage, lost: p.parts[part] >= 100 && before < 100 });
   }
 
   crash(hz) {

@@ -1,10 +1,12 @@
 // Canvas renderer. Reads the World and draws the whole scene + HUD.
 // The world is in logical units (height = WORLD.height); `view.scale` maps to device px.
-import { COMPOUNDS, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SPEED, TYRES } from './config.js';
+import { COMPOUNDS, DAMAGE, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SPEED, START, TYRES } from './config.js';
 import { clamp, engineState, formatDistance, formatTime, gpProgress, lerp, positionLabel, sweepPos } from './logic.js';
 
 const FONT = '"Segoe UI", system-ui, Roboto, sans-serif';
 const MONO = '"Cascadia Mono", Consolas, "Roboto Mono", monospace';
+/** Damage card size (top-left, under the score); the radio strip keeps clear of it on narrow screens. */
+const DAMAGE_CARD = { w: 176, h: 50 };
 
 /** Deterministic 0..1 noise from an integer seed (for scenery that must not flicker). */
 const hash = (n) => {
@@ -69,6 +71,7 @@ export class Renderer {
     this.drawBackdrop(world, W, H);
     this.drawPitLane(world, W);
     this.drawTrack(world, W);
+    this.drawGrid(world, W);
     this.drawGrassBottom(world, W, H);
     for (const hz of world.hazards) if (hz.type === 'oil' || hz.type === 'drs') this.drawHazard(hz, world);
     this.drawParticles(world, ['spray', 'smoke', 'streak']);
@@ -92,7 +95,82 @@ export class Renderer {
       ctx.fillRect(0, 0, W, H);
     }
     this.drawVenueCard(world, W, H);
+    this.drawLights(world, W);
     if (hud) this.drawHud(world, hud, W, H);
+  }
+
+  /** Grid boxes and the start line, painted on the asphalt; they scroll away with the track. */
+  drawGrid(world, W) {
+    const slots = world.start.slots;
+    if (!slots.length) return;
+    const { ctx } = this;
+    const w = PLAYER.width * 0.92;
+    const h = PLAYER.height * 0.92;
+    const last = slots[slots.length - 1];
+    const lineX = last.x + w * 0.5 + 40 - world.scroll;
+    if (lineX < -60) return; // long gone
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    for (let i = 0; i < slots.length; i++) {
+      const x = slots[i].x - world.scroll;
+      if (x < -w || x > W + w) continue;
+      // the box: a bar across the front and a short tail down the inside edge
+      const y = slots[i].y;
+      ctx.fillRect(x + w * 0.5 + 6, y - h * 0.5 - 6, 4, h + 12);
+      ctx.fillRect(x + w * 0.5 - 30, y - h * 0.5 - 6, 36, 4);
+      ctx.fillRect(x + w * 0.5 - 30, y + h * 0.5 + 2, 36, 4);
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`P${20 - i}`, x, y - h * 0.5 - 10); // you are P20 at the back; the field counts down ahead of you
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    }
+    // start / finish line: chequers across the track just ahead of pole
+    if (lineX < W + 20) {
+      const top = world.trackTop, bottom = world.trackBottom;
+      const sq = 10;
+      for (let r = 0; r * sq < bottom - top; r++) {
+        for (let c = 0; c < 3; c++) {
+          ctx.fillStyle = (r + c) % 2 ? '#f4f4f4' : '#111';
+          ctx.fillRect(lineX + c * sq, top + r * sq, sq, Math.min(sq, bottom - top - r * sq));
+        }
+      }
+    }
+    ctx.textAlign = 'left';
+  }
+
+  /** The start gantry: five red lights over the pit wall, then out. Fades a moment after the launch. */
+  drawLights(world, W) {
+    const s = world.start;
+    const sinceGo = s.phase === 'go' ? s.sinceGo : -1;
+    if (sinceGo > 2.5) return;
+    const { ctx } = this;
+    const a = sinceGo < 0 ? 1 : clamp(1 - (sinceGo - 1.5), 0, 1);
+    const cx = W / 2, cy = world.pitTop + (world.pitBottom - world.pitTop) / 2;
+    const gap = 34;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = '#0b0d12';
+    roundRect(ctx, cx - gap * 2.5 - 14, cy - 22, gap * 5 + 28, 44, 8);
+    ctx.fill();
+    ctx.fillStyle = '#2a2f3a';
+    ctx.fillRect(cx - gap * 2.5 - 14, cy - 34, gap * 5 + 28, 6); // the beam
+    for (let i = 0; i < START.lights; i++) {
+      const lit = sinceGo < 0 && i < s.lit;
+      const x = cx - gap * 2 + i * gap;
+      if (lit) {
+        ctx.fillStyle = 'rgba(255,42,42,0.35)';
+        ctx.beginPath(); ctx.arc(x, cy, 19, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = lit ? '#ff2a2a' : '#3a1212';
+      ctx.beginPath(); ctx.arc(x, cy, 12, 0, Math.PI * 2); ctx.fill();
+    }
+    if (sinceGo < 0 && s.lit === 0) {
+      ctx.fillStyle = '#c9ced9';
+      ctx.font = `bold 12px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText('FORMATION', cx, cy + 40);
+      ctx.textAlign = 'left';
+    }
+    ctx.globalAlpha = 1;
   }
 
   // ---------- scenery ----------
@@ -1039,10 +1117,26 @@ export class Renderer {
       ctx.fillStyle = on ? '#ff2a2a' : '#5a0000';
       ctx.fillRect(-PLAYER.width * 0.5, -PLAYER.height * 0.12, 5, PLAYER.height * 0.24);
     }
-    // damage sparks flag
-    if (p.damage > 0) {
-      ctx.fillStyle = '#222';
-      ctx.fillRect(PLAYER.width * 0.35, -PLAYER.height * 0.25, 10, 4);
+    // damage: a flap of front wing hanging off the nose (gone entirely at 100), a torn floor strake under the sidepod
+    const { wing, floor } = p.parts;
+    if (wing >= 100) {
+      ctx.fillStyle = '#1a1c22';
+      ctx.fillRect(PLAYER.width * 0.36, PLAYER.height * 0.22, PLAYER.width * 0.16, 5); // bare nose stub where the wing was
+    } else if (wing >= 30) {
+      ctx.save();
+      ctx.translate(PLAYER.width * 0.44, PLAYER.height * 0.3);
+      ctx.rotate(0.5 + Math.sin(this.time * 18) * 0.12 * (wing / 100));
+      ctx.fillStyle = '#1a1c22';
+      ctx.fillRect(-3, 0, 6 + wing * 0.1, 4);
+      ctx.restore();
+    }
+    if (floor >= 30) {
+      ctx.save();
+      ctx.translate(-PLAYER.width * 0.1, PLAYER.height * 0.42);
+      ctx.rotate(-0.35 - Math.sin(this.time * 22) * 0.1);
+      ctx.fillStyle = '#1a1c22';
+      ctx.fillRect(0, 0, 8 + floor * 0.12, 3);
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -1396,7 +1490,7 @@ export class Renderer {
     ctx.fillText('[1-5 / Tab]', tx + 80, H - 22);
     // pit status: a chip on the card's edge (it used to float over the grass), urgent when the car needs the stop
     const pitIn = world.pitCountdown();
-    const needsStop = world.tyre.punctured || cliff || world.player.damage > 0
+    const needsStop = world.tyre.punctured || cliff || world.damage >= DAMAGE.needsStop
       || (world.rain > 0.35 && c.wet === undefined) || (world.rain < 0.1 && c.wet !== undefined);
     let pitChip;
     if (world.pit.inLane) pitChip = [world.pit.phase === 'stop' ? 'IN THE BOX — fire the guns!' : 'PIT LANE', '#ffd400', '#111'];
@@ -1455,7 +1549,8 @@ export class Renderer {
     // wrap instead of running off; a subtitled clip names who is talking.
     const gap = (W - pad - 250) - (pad + 300) - 24;
     const narrow = gap < 380;
-    const radioMaxW = narrow ? W - pad * 2 : Math.min(gap, 620);
+    // narrow: under the cards, but clear of the damage card that hangs below the score (see drawDamage)
+    const radioMaxW = narrow ? W - pad * 2 - 2 * (DAMAGE_CARD.w + 10) : Math.min(gap, 620);
     const radioY = narrow ? pad + 64 + 10 : pad + 6;
     const bannerY = radioY + 68; // SC / penalty banners stack under the strip's tallest form
     if (hud.radio && hud.radio.age < (hud.radio.dur ?? 4.5)) {
@@ -1537,15 +1632,63 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
-    // controls hint for the first seconds
-    if (world.elapsed < 8 && !world.gameOver) {
-      ctx.globalAlpha = clamp(1 - (world.elapsed - 6) / 2, 0, 1) * 0.9;
+    // damage meter under the score card (top-left stays clear of the track), flashes on a hit
+    this.drawDamage(world, hud, pad);
+
+    // controls hint: what to do on the grid (in the empty middle lane), then the basics for the first seconds of racing
+    const sinceGo = world.racing ? world.start.sinceGo : -1;
+    if (sinceGo < 8 && !world.gameOver) {
+      ctx.globalAlpha = (sinceGo < 0 ? 1 : clamp(1 - (sinceGo - 6) / 2, 0, 1)) * 0.9;
       ctx.textAlign = 'center';
       ctx.font = `13px ${FONT}`;
       ctx.fillStyle = '#fff';
-      ctx.fillText('▲▼ steer   ▶ push / ◀ lift   SPACE boost   B to box when the window opens   ·   sit behind a rival for the tow', W / 2, world.trackBottom - 22);
+      if (sinceGo < 0) {
+        const mid = (world.trackTop + world.trackBottom) / 2;
+        ctx.fillText('Hold for the lights   ·   ▶ or SPACE the instant they go out for a GREAT START', W / 2, mid - 6);
+        ctx.fillText('A touch in the pack costs bodywork, not the race', W / 2, mid + 14);
+      } else {
+        ctx.fillText('▲▼ steer   ▶ push / ◀ lift   SPACE boost   B to box when the window opens   ·   sit behind a rival for the tow', W / 2, world.trackBottom - 22);
+      }
       ctx.globalAlpha = 1;
     }
+  }
+
+  /** Damage card: front wing and floor bars. Empty bars are good; a full red bar means the next hit retires you. */
+  drawDamage(world, hud, pad) {
+    const { ctx } = this;
+    const { wing, floor } = world.player.parts;
+    const flash = hud.damage && hud.damage.age < 0.9 ? 1 - hud.damage.age / 0.9 : 0;
+    const x = pad, y = pad + 64 + 8, { w, h } = DAMAGE_CARD;
+    ctx.fillStyle = 'rgba(8,10,16,0.82)';
+    roundRect(ctx, x, y, w, h, 10);
+    ctx.fill();
+    if (flash > 0) {
+      ctx.strokeStyle = `rgba(255,59,59,${flash})`;
+      ctx.lineWidth = 2;
+      roundRect(ctx, x, y, w, h, 10);
+      ctx.stroke();
+    }
+    const total = world.damage;
+    ctx.textAlign = 'left';
+    ctx.font = `bold 10px ${FONT}`;
+    ctx.fillStyle = total >= 100 ? '#ff3b3b' : total >= DAMAGE.needsStop ? '#ffd400' : '#c9ced9';
+    ctx.fillText(total >= 100 ? 'DAMAGE · TERMINAL' : total >= DAMAGE.needsStop ? 'DAMAGE · BOX' : 'DAMAGE', x + 12, y + 15);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#c9ced9';
+    ctx.fillText(`${Math.round(total)}%`, x + w - 12, y + 15);
+    ctx.textAlign = 'left';
+    const bars = [['F WING', wing, 'wing'], ['FLOOR', floor, 'floor']];
+    bars.forEach(([label, v, part], i) => {
+      const by = y + 23 + i * 12;
+      const hot = hud.damage && hud.damage.part === part && flash > 0;
+      ctx.font = `bold 9px ${FONT}`;
+      ctx.fillStyle = hot ? '#fff' : '#8a91a0';
+      ctx.fillText(label, x + 12, by + 7);
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(x + 56, by, w - 68, 7);
+      ctx.fillStyle = v >= 100 ? '#ff3b3b' : v >= 60 ? '#ff8a00' : v > 0 ? '#ffd400' : '#2ecc71';
+      ctx.fillRect(x + 56, by, (w - 68) * (v / 100), 7);
+    });
   }
 
   /** Small status pill centred on y, growing left or right from x. */

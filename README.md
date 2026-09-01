@@ -27,7 +27,9 @@ Or open `index.html` straight from disk — everything works offline except the 
 
 ### How it works
 
-- **Crash** into a tyre or a rival car and the race is over. **Oil** spins you and adds wear; **debris** damages the front wing (a little less top speed until you pit).
+- **The start**: you line up P20 at the back of a staggered grid of twelve. Five red lights come on one by one, hold, and go out — hit push or boost within a third of a second for a **+50 great start** (going before they are out is a jump start: no penalty, no bonus). Everyone launches at their own rate; passes in the pack pay +30. For the first ten seconds nothing else spawns and contact costs bodywork, not the race.
+- **Damage**: the car has two damageable parts, shown on the damage meter. The **front wing** takes debris and nose-to-tail contact and costs top speed; the **floor** takes side-by-side rubs (or a car into your rear) and costs grip. A gentle touch is survivable — you lose momentum and the other car gets punted on — but a hard frontal hit outside the launch, or any hit on a part already at 100 %, is a **crash** and the race is over. A rolling tyre or a stranded car is always a crash. The pit crew fits a new nose and floor with the tyres, and the wall calls you in from 30 % damage.
+- **Oil** spins you and adds wear.
 - **Tyre wear** grows with the square of your speed. Past ~65 % grip falls off a cliff — you turn slower and can't use full throttle. At 100 % you puncture and limp until you pit.
 - **Compounds**: softs are quick and short-lived, hards are slow and last, mediums are mediums. Inters and wets only grip when it **rains**, and it will rain.
 - **Pit window** opens every ~26 s for 7 s. Press `B` or tap the pulsing **BOX BOX** button and the car steers itself into the pits (or steer up into the flashing green gap yourself). Ask too early and the wall tells you to stay out. The stop fits whatever compound you selected.
@@ -41,7 +43,7 @@ Or open `index.html` straight from disk — everything works offline except the 
 - **Boxing**: press `B` and the car is ghosted — nothing can hit it — while the world drops into slow motion and it peels off into the pit lane for the wheel-gun mini-game.
 - **Weather**: heavy rain brings lightning and standing water. Fresh tyres out of the pits are cold for a few seconds — weave and take it easy.
 - **Score** = metres travelled + 60 per overtake + 25 per close call + bonuses. Every kilometre and every sustained push gets a radio message from the pit wall.
-- **Career**: championship points, distance and a 16-trophy cabinet persist in this browser (title screen → Trophy cabinet).
+- **Career**: championship points, distance and an 18-trophy cabinet persist in this browser (title screen → Trophy cabinet).
 
 ### Sounds
 

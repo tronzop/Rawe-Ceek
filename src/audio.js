@@ -300,6 +300,23 @@ export class AudioEngine {
     src.start(t);
     src.stop(t + 1.1);
   }
+  /** Carbon on carbon: a short, dull crunch for contact you survive (the crash noise is the long one). */
+  crunch(vol = 0.5) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1800, t);
+    lp.frequency.exponentialRampToValueAtTime(200, t + 0.25);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    src.connect(lp).connect(g).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + 0.32);
+  }
   skid(vol = 0.35) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;

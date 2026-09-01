@@ -181,6 +181,45 @@ export function stopSummary(results) {
 }
 
 // ---------------------------------------------------------------------------
+// The start and the damage model (pure, tested)
+// ---------------------------------------------------------------------------
+import { DAMAGE, START } from './config.js';
+
+/** Red lights lit `t` seconds after the sequence began (0 before it starts, capped at five). */
+export function lightsLit(t) {
+  if (t < 0) return 0;
+  return Math.min(START.lights, Math.floor(t / START.lightInterval) + 1);
+}
+/** Seconds of lights before they can go out (the random hold is added on top). */
+export const lightsFullAt = () => START.lights * START.lightInterval;
+
+/**
+ * What a touch with a rival costs. `ahead`: the rival is in front of you. `ox`/`oy`: overlap
+ * of the two hitboxes; `h`: your hitbox height. `closing`: how fast you were gaining on it.
+ * Returns the part that takes the hit ('wing' | 'floor') or 'crash'.
+ *  - alongside (little vertical overlap): a floor rub, always survivable
+ *  - nose into the car ahead: wing damage if the impact was gentle, or during the launch
+ *  - anything into a part already at 100, or a hard hit outside the launch: crash
+ */
+export function contactOutcome({ ahead, ox, oy, h, closing, launch, parts }) {
+  const sideRub = oy < h * 0.5;
+  const part = sideRub || !ahead ? 'floor' : 'wing';
+  if (parts[part] >= 100) return 'crash';
+  if (launch || sideRub) return part;
+  if (ahead && closing <= DAMAGE.maxClosing && ox <= DAMAGE.frontalDepth) return part;
+  return 'crash';
+}
+/** Throttle ceiling lost to wing damage and the grip multiplier from floor damage. */
+export function damageEffects(parts) {
+  return {
+    throttleLoss: (clamp(parts.wing, 0, 100) / 100) * DAMAGE.wingThrottleLoss,
+    gripMul: lerp(1, 1 - DAMAGE.floorGripLoss, clamp(parts.floor, 0, 100) / 100),
+  };
+}
+/** Single 0..100 figure for the damage meter: the worst part. */
+export const totalDamage = (parts) => Math.max(parts.wing, parts.floor);
+
+// ---------------------------------------------------------------------------
 // Engine model (shared by the synth and the sample player)
 // ---------------------------------------------------------------------------
 export const ENGINE = { gears: 8, idleRpm: 4000, maxRpm: 12500, cylinders: 12 };

@@ -245,6 +245,39 @@ test('pit mini-game: sweep, judgement and stop times', () => {
   assert.ok(stopSummary(perfect).record);
 });
 
+test('start: five lights come on one at a time, then hold', async () => {
+  const { lightsLit, lightsFullAt } = await logicP;
+  const { START } = await configP;
+  assert.equal(lightsLit(-1), 0);
+  assert.equal(lightsLit(0), 1);
+  assert.equal(lightsLit(START.lightInterval * 1.5), 2);
+  assert.equal(lightsLit(START.lightInterval * (START.lights - 1)), START.lights);
+  assert.equal(lightsLit(1e6), START.lights);
+  assert.equal(lightsFullAt(), START.lights * START.lightInterval);
+});
+
+test('damage: gentle contact costs a part, hard contact costs the race, the launch forgives', async () => {
+  const { contactOutcome, damageEffects, totalDamage } = await logicP;
+  const { DAMAGE } = await configP;
+  const fresh = { wing: 0, floor: 0 };
+  const base = { ahead: true, ox: 6, oy: 30, h: 30, closing: 80, launch: false, parts: fresh };
+  assert.equal(contactOutcome(base), 'wing'); // nose into a slow car ahead
+  assert.equal(contactOutcome({ ...base, closing: DAMAGE.maxClosing + 1 }), 'crash'); // too fast
+  assert.equal(contactOutcome({ ...base, ox: DAMAGE.frontalDepth + 1 }), 'crash'); // too deep
+  assert.equal(contactOutcome({ ...base, closing: 400, ox: 40, launch: true }), 'wing'); // anything goes off the line
+  assert.equal(contactOutcome({ ...base, oy: 8 }), 'floor'); // alongside: a rub, whatever the speed
+  assert.equal(contactOutcome({ ...base, oy: 8, closing: 400 }), 'floor');
+  assert.equal(contactOutcome({ ...base, ahead: false }), 'crash'); // rear-ended outside the launch
+  assert.equal(contactOutcome({ ...base, ahead: false, launch: true }), 'floor');
+  assert.equal(contactOutcome({ ...base, parts: { wing: 100, floor: 0 } }), 'crash'); // no wing left to lose
+  assert.equal(contactOutcome({ ...base, launch: true, parts: { wing: 100, floor: 0 } }), 'crash');
+  assert.deepEqual(damageEffects(fresh), { throttleLoss: 0, gripMul: 1 });
+  const wrecked = damageEffects({ wing: 100, floor: 100 });
+  assert.ok(Math.abs(wrecked.throttleLoss - DAMAGE.wingThrottleLoss) < 1e-9);
+  assert.ok(Math.abs(wrecked.gripMul - (1 - DAMAGE.floorGripLoss)) < 1e-9);
+  assert.equal(totalDamage({ wing: 30, floor: 70 }), 70);
+});
+
 test('meme pack: every clip with words has a subtitle and a speaker', async () => {
   const { OPTIONAL_CLIPS, clipLine } = await import('../src/grid.js');
   for (const [id, c] of Object.entries(OPTIONAL_CLIPS)) {
