@@ -1,6 +1,6 @@
 // Pure gameplay maths. No DOM, no canvas, no side effects — this module is
 // unit-tested under Node (see test/logic.test.js) and shared by the world sim.
-import { COMPOUNDS, ERS, PIT, SPAWN, SPEED, TYRES } from './config.js';
+import { COMPOUNDS, ERS, PIT, SC_GAME, SPAWN, SPEED, TYRES } from './config.js';
 
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
@@ -139,6 +139,21 @@ export function towFactor(dx, dy) {
   const lateral = 1 - clamp(Math.abs(dy) / SLIPSTREAM.lateral, 0, 1);
   const depth = 1 - dx / SLIPSTREAM.range;
   return clamp(lateral * (0.35 + 0.65 * depth), 0, 1);
+}
+
+// ----- the safety-car weave -----
+/** One step of the weave: `weaves` counted reversals this step add heat, safety-car pace bleeds it. */
+export function weaveHeat(heat, dt, weaves = 0) {
+  return clamp(heat + weaves * SC_GAME.heatPerWeave - SC_GAME.coolPerSecond * dt, 0, 1);
+}
+/** cold | warm | hot against the temperature window. */
+export function weaveZone(heat) {
+  return heat < SC_GAME.band.lo ? 'cold' : heat > SC_GAME.band.hi ? 'hot' : 'warm';
+}
+/** Restart bonus for time spent in the window, rounded to tens so the popup reads cleanly. */
+export function weaveBonus(inBand, total) {
+  if (total <= 0) return 0;
+  return Math.round((SC_GAME.bonus * clamp(inBand / total, 0, 1)) / 10) * 10;
 }
 
 /** Grip multiplier from tyre temperature 0..1. */

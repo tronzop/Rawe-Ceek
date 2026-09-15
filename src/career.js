@@ -15,6 +15,7 @@ export const TROPHIES = [
   { id: 'regen', name: 'Regenmeister', desc: 'Survive 45 seconds of rain in one run.', check: (c, r) => r.rainTime >= 45 },
   { id: 'lights', name: 'Under the lights', desc: 'Race at a night venue.', check: (c, r) => r.nightTime >= 5 },
   { id: 'sc', name: 'Safety car, safety car', desc: 'Sit behind the safety car without a penalty.', check: (c, r) => r.scClean >= 1 },
+  { id: 'weave', name: 'Weave, weave', desc: 'Restart on warm tyres and take the jump at the green.', check: (c, r) => r.warmRestarts >= 1 && r.scJumps >= 1 },
   { id: 'multi21', name: 'Multi 21', desc: 'Overtake your team-mate. Copy, we will discuss it after.', check: (c, r) => r.teammatePasses >= 1 },
   { id: 'tow', name: 'Get the tow', desc: 'Harvest 100 ERS from slipstreams in one run.', check: (c, r) => r.towEnergy >= 100 },
   { id: 'p1', name: 'P1', desc: 'Reach P1: nineteen overtakes in one run.', check: (c, r) => r.overtakes >= 19 },
@@ -36,6 +37,7 @@ export const EMPTY_RUN = () => ({
   gps: 0, pushes: 0, punctures: 0, stops: 0, slowStops: 0, rainTime: 0, nightTime: 0, scClean: 0, scPeriods: 0,
   penalties: 0, teammatePasses: 0, legendPasses: 0, towEnergy: 0, overtakes: 0, score: 0, metres: 0,
   recordStops: 0, cleanStops: 0, perfectStops: 0, contacts: 0, repairs: 0, greatStarts: 0, car: '',
+  scWeaves: 0, warmRestarts: 0, scJumps: 0,
 });
 
 const load = () => {

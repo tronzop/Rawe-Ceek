@@ -1,6 +1,6 @@
 // Canvas renderer. Reads the World and draws the whole scene + HUD.
 // The world is in logical units (height = WORLD.height); `view.scale` maps to device px.
-import { COMPOUNDS, DAMAGE, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SPEED, START, TYRES } from './config.js';
+import { COMPOUNDS, DAMAGE, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SC_GAME, SPEED, START, TYRES } from './config.js';
 import { clamp, engineState, formatDistance, formatTime, gpProgress, lerp, positionLabel, sweepPos, wheelZones } from './logic.js';
 import { drawLivery } from './livery.js';
 
@@ -1427,6 +1427,7 @@ export class Renderer {
     // status chip on the card's top edge: whatever is capping or boosting the speed right now
     let chip = null;
     if (world.penalty > 0) chip = [`PENALTY ${world.penalty.toFixed(1)}s`, '#ff3b3b', '#fff'];
+    else if (world.neutralised) chip = ['NEUTRALISED — weave', '#ffd400', '#111'];
     else if (world.sc.active) chip = ['SC DELTA — hold station', '#ffd400', '#111'];
     else if (world.sc.restartTimer > 0) chip = [`RESTART ×2 · ${world.sc.restartTimer.toFixed(1)}s`, '#2ecc71', '#111'];
     else if (world.tyre.punctured) chip = ['LIMPING — box', '#ff3b3b', '#fff'];
@@ -1602,13 +1603,15 @@ export class Renderer {
     // safety car banner
     if (world.sc.active) {
       const on = Math.sin(this.time * 6) > 0;
+      const text = world.sc.phase === 'ending' ? 'SAFETY CAR IN THIS LAP' : world.sc.neutral ? 'SAFETY CAR — RACE NEUTRALISED' : 'SAFETY CAR — NO OVERTAKING';
+      ctx.font = `900 16px ${FONT}`;
+      const bw = Math.max(260, ctx.measureText(text).width + 40);
       ctx.textAlign = 'center';
       ctx.fillStyle = on ? '#ffd400' : '#ffb000';
-      roundRect(ctx, W / 2 - 130, bannerY, 260, 30, 6);
+      roundRect(ctx, W / 2 - bw / 2, bannerY, bw, 30, 6);
       ctx.fill();
       ctx.fillStyle = '#111';
-      ctx.font = `900 16px ${FONT}`;
-      ctx.fillText(world.sc.phase === 'ending' ? 'SAFETY CAR IN THIS LAP' : 'SAFETY CAR — NO OVERTAKING', W / 2, bannerY + 21);
+      ctx.fillText(text, W / 2, bannerY + 21);
     }
 
     // penalty banner: a served penalty should be unmissable, not a corner note
@@ -1645,6 +1648,116 @@ export class Renderer {
 
     // coach card: what to do on the grid (in the empty middle lane), then one short tip at a time for the opening seconds
     this.drawCoach(world, W, H);
+
+    // behind the safety car: the weave gauge, then the countdown back to green
+    this.drawWeave(world, W);
+    this.drawCountdown(world, W);
+  }
+
+  /**
+   * The safety-car weave. A card ahead of the car with the tyre-temperature gauge: blue below
+   * the window, green inside it, red (blistering) above. Sits in the lane the car weaves in,
+   * ahead of it, so eyes stay on the car.
+   */
+  drawWeave(world, W) {
+    const w = world.sc.weave;
+    if (!world.neutralised || !w || world.gameOver) return;
+    const { ctx } = this;
+    const cx = W / 2;
+    const mid = (world.trackTop + world.trackBottom) / 2;
+    // between the toast line (H * 0.36 and its pill) and the top of the weave band
+    const cardW = 380, cardH = 64;
+    const x0 = cx - cardW / 2;
+    const y0 = mid - SC_GAME.weaveAmplitude - cardH - 24;
+    ctx.save();
+    ctx.globalAlpha = 0.94;
+    ctx.fillStyle = 'rgba(8,10,16,0.86)';
+    roundRect(ctx, x0, y0, cardW, cardH, 10);
+    ctx.fill();
+    const zoneColor = w.zone === 'warm' ? '#2ecc71' : w.zone === 'hot' ? '#ff3b3b' : '#7df9ff';
+    ctx.fillStyle = zoneColor;
+    ctx.fillRect(x0, y0 + 8, 3, cardH - 16);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#fff';
+    ctx.font = `900 13px ${FONT}`;
+    ctx.fillText('KEEP THE TYRES WARM', x0 + 16, y0 + 20);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = zoneColor;
+    ctx.font = `bold 12px ${FONT}`;
+    ctx.fillText(w.zone === 'warm' ? 'IN THE WINDOW' : w.zone === 'hot' ? 'BLISTERING' : 'COLD', x0 + cardW - 16, y0 + 20);
+    // the gauge: track, the window, the fill, the needle
+    const gx = x0 + 16, gy = y0 + 27, gw = cardW - 32, gh = 10;
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    roundRect(ctx, gx, gy, gw, gh, 6);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(46,204,113,0.28)';
+    ctx.fillRect(gx + gw * SC_GAME.band.lo, gy, gw * (SC_GAME.band.hi - SC_GAME.band.lo), gh);
+    const grad = ctx.createLinearGradient(gx, 0, gx + gw, 0);
+    grad.addColorStop(0, '#2f80ff'); grad.addColorStop(0.5, '#2ecc71'); grad.addColorStop(0.88, '#ffd400'); grad.addColorStop(1, '#ff3b3b');
+    ctx.fillStyle = grad;
+    ctx.save();
+    roundRect(ctx, gx, gy, gw, gh, 6);
+    ctx.clip();
+    ctx.fillRect(gx, gy, gw * w.heat, gh);
+    ctx.restore();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(gx + gw * w.heat - 1.5, gy - 3, 3, gh + 6);
+    // the instruction and the tally
+    ctx.textAlign = 'left';
+    const runs = this.coachRuns(this.touch ? 'Wiggle up and down to weave' : '[▲] [▼] weave · one swing each way');
+    let x = gx;
+    const ty = y0 + cardH - 11;
+    for (const seg of runs) {
+      if (seg.key) {
+        ctx.fillStyle = '#1c2029';
+        roundRect(ctx, x, ty - 13, seg.w - 6, 18, 4);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = `700 11px ${MONO}`;
+        ctx.fillText(seg.text, x + 7, ty);
+      } else {
+        ctx.fillStyle = seg.sep ? '#6b7280' : '#c9ced9';
+        ctx.font = `600 13px ${FONT}`;
+        ctx.fillText(seg.text, x, ty);
+      }
+      x += seg.w;
+    }
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffd400';
+    ctx.font = `bold 12px ${MONO}`;
+    ctx.fillText(`${w.weaves} weaves`, x0 + cardW - 16, ty);
+    ctx.restore();
+  }
+
+  /** 3 · 2 · 1 in the middle of the track while the safety car peels off; the green flag toast takes over. */
+  drawCountdown(world, W) {
+    const sc = world.sc;
+    if (!sc.active || sc.phase !== 'ending' || sc.countdown < 0 || world.gameOver) return;
+    const { ctx } = this;
+    const n = Math.ceil(sc.countdown);
+    const frac = sc.countdown - (n - 1); // 1 → 0 within this second
+    const pop = 1 + 0.25 * clamp((frac - 0.75) / 0.25, 0, 1); // lands big, settles
+    // in the middle lane ahead of the car, where the safety car was until it peeled off
+    const y = (world.trackTop + world.trackBottom) / 2 + 4;
+    ctx.save();
+    ctx.translate(W / 2, y);
+    ctx.scale(pop, pop);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 72px ${FONT}`;
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.strokeText(String(n), 0, 0);
+    ctx.fillStyle = n === 1 ? '#2ecc71' : '#ffd400';
+    ctx.fillText(String(n), 0, 0);
+    ctx.font = `bold 13px ${FONT}`;
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 4;
+    ctx.strokeText('RESTART — READY ON THE THROTTLE', 0, 52);
+    ctx.fillText('RESTART — READY ON THE THROTTLE', 0, 52);
+    ctx.restore();
   }
 
   /**

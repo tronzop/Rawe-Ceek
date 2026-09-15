@@ -206,6 +206,28 @@ export const SCORING_EXTRA = {
 
 export const SAFETY_CAR_TEAM = { name: 'Safety Car', primary: '#c9ccd2', accent: '#ff9d00' };
 
+/**
+ * Under the safety car the race is neutralised: once the field has bunched up the car is
+ * taken off you and holds station behind the safety car on its own. Your job is the weave —
+ * swing the car left and right to keep the tyres in the temperature window — and a 3-2-1
+ * countdown hands the car back at the green. Warm tyres restart with grip; cold ones do not.
+ */
+export const SC_GAME = {
+  takeoverAfter: 1.5, // seconds after the yellow before the car is taken off you (the field bunches up first)
+  paceFactor: 0.97, // fraction of the safety-car speed cap the neutralised car holds (rivals ahead pull away slowly)
+  weaveAmplitude: 40, // px either side of the centre line the weave can reach
+  weaveSpeed: 0.9, // fraction of normal vertical speed while weaving
+  minSwing: 40, // px the car must have moved since the last reversal for a weave to count: half the band, so no mashing
+  heatPerWeave: 0.045, // temperature 0..1 gained per counted weave: a steady edge-to-edge rhythm holds, hurrying overheats
+  coolPerSecond: 0.075, // temperature lost per second at safety-car pace
+  band: { lo: 0.5, hi: 0.88 }, // the window: below is cold (less grip at the restart), above blisters the tyres
+  blisterWear: 4, // % tyre wear per second spent above the window
+  bonus: 80, // restart bonus, scaled by the share of the neutralised time spent in the window
+  countdown: 3, // seconds of countdown while the safety car peels off
+  jumpWindow: 0.35, // seconds after the green to hit the throttle for the jump bonus
+  jumpBonus: 40,
+};
+
 Object.assign(STORAGE_KEYS, { career: 'rawe-ceek:career' });
 
 /**

@@ -1,5 +1,5 @@
 // Bootstrap: wires input, world, renderer, audio and the DOM screens together.
-import { COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, SPEED, STORAGE_KEYS, TYRES, VENUES, WORLD } from './config.js';
+import { COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, SC_GAME, SPEED, STORAGE_KEYS, TYRES, VENUES, WORLD } from './config.js';
 import { Input, detectTouch } from './input.js';
 import { World } from './world.js';
 import { Renderer } from './render.js';
@@ -166,7 +166,7 @@ function gameOver(payload = {}) {
 // (crash, penalty, wheel gun...) preempt whatever is showing; ambient chatter
 // (milestones, weather, the tow) waits its turn so every line can be read.
 const RADIO_PREEMPT = new Set([
-  'crash', 'puncture', 'penalty', 'oil', 'debris', 'scDeployed', 'scRestart', 'scClean',
+  'crash', 'puncture', 'penalty', 'oil', 'debris', 'scDeployed', 'scRestart', 'scClean', 'scNeutral', 'scCold', 'scWarm', 'scJump',
   'pitDenied', 'pitRequested', 'pitIn', 'pitGame', 'pitMiss', 'pitLate',
   'pitRecord', 'pitSlow', 'pitOut', 'teammate', 'teammateClose',
 ]);
@@ -330,8 +330,19 @@ function onWorldEvent(evt, payload = {}) {
     case 'venue': setTimeout(() => radio('venue', { venue: payload.venue.name }), 1800); break; // the renderer shows the round card
     case 'night': setTimeout(() => radio('night'), 4500); break;
     case 'scDeployed': audio.siren(); say(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking · lift to hold station'); radio('scDeployed'); break;
+    case 'scNeutral': audio.radioClick(); toast('RACE NEUTRALISED', '#ffd400', touch ? 'wiggle your thumb up and down to keep the tyres warm' : '▲▼ weave to keep the tyres warm'); radio('scNeutral'); break;
     case 'scEnding': audio.scEnding(); toast('SC IN THIS LAP', '#ffd400', 'restart coming — overtakes pay double'); radio('scEnding'); break;
-    case 'scRestart': audio.drs(); say(['leavemealone'], { volume: 0.9, minGap: 30 }); toast('GREEN FLAG', '#2ecc71', 'overtakes pay double'); radio(payload.clean ? 'scClean' : 'scRestart'); break;
+    case 'scCount': audio.blip(payload.n === 1 ? 784 : 660, 0.1, 'square', 0.16); break;
+    case 'weave': audio.blip(payload.zone === 'hot' ? 300 : 440 + payload.heat * 300, 0.04, 'triangle', 0.08); break;
+    case 'scJump': audio.overtake(); toast('JUMP', '#2ecc71', `+${SC_GAME.jumpBonus} on the restart`); radio('scJump'); break;
+    case 'scRestart': {
+      audio.drs();
+      say(['leavemealone'], { volume: 0.9, minGap: 30 });
+      const sub = payload.warm === null ? 'overtakes pay double' : payload.warm ? `tyres in the window · overtakes pay double` : 'tyres cold — careful · overtakes pay double';
+      toast('GREEN FLAG', payload.warm === false ? '#7df9ff' : '#2ecc71', sub);
+      radio(payload.warm === false ? 'scCold' : payload.warm ? 'scWarm' : payload.clean ? 'scClean' : 'scRestart');
+      break;
+    }
     case 'penalty': audio.penalty(); audio.play('penalty', { volume: 0.9, minGap: 5 }); toast('5s PENALTY', '#ff3b3b', 'overtaking under safety car'); radio('penalty'); break;
     case 'teammate': {
       audio.overtake();

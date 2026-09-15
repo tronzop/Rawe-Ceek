@@ -2,13 +2,13 @@
 // It knows nothing about the canvas or audio; it reports interesting moments
 // through `emit(event, payload)` so the presentation layer can react.
 import {
-  COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SCORING, SCORING_EXTRA, SLIPSTREAM,
+  COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SC_GAME, SCORING, SCORING_EXTRA, SLIPSTREAM,
   SPAWN, SPEED, START, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WEATHER, WORLD,
 } from './config.js';
 import {
   baseSpeed, clamp, gpsCompleted, gripFactor, lerp, nextPitWindowIn, pick, pickHazard, pitWindowOpen, rand, rectCircleGap,
   rectGap, playerSpeed, spawnInterval, tempGrip, towFactor, venueIndexAt, wearDelta, judgeWheel, sweepPos, stopSummary,
-  contactOutcome, damageEffects, lightsFullAt, lightsLit, totalDamage,
+  contactOutcome, damageEffects, lightsFullAt, lightsLit, totalDamage, weaveBonus, weaveHeat, weaveZone,
 } from './logic.js';
 import { EMPTY_RUN } from './career.js';
 import { DRIVERS, LEGEND_BONUS, LEGEND_CHANCE, TEAMS, teamOf } from './grid.js';
@@ -106,7 +106,14 @@ export class World {
     this.night = VENUES[0].night ? 1 : 0;
     this.gps = 0;
     // safety car
-    this.sc = { active: false, phase: 'none', timer: 0, cooldown: SAFETY_CAR.firstAfter, restartTimer: 0, grace: 0, clean: true, car: null };
+    this.sc = {
+      active: false, phase: 'none', timer: 0, cooldown: SAFETY_CAR.firstAfter, restartTimer: 0, grace: 0, clean: true, car: null,
+      // the neutralised phase: the car drives itself, you weave to keep the tyres warm
+      neutral: false, weave: null, countdown: -1, lastCount: -1,
+      // the jump: hit the throttle right after the green (but not before)
+      jump: 0, jumpArmed: false,
+    };
+    this.pointerLastY = null; // for the weave: the finger's direction of travel, not its position
     this.penalty = 0;
     this.cine = 0; // 0..1 pit-entry cinematic blend
     // slipstream
@@ -207,6 +214,20 @@ export class World {
     return true;
   }
 
+  /** The weave: a reversal of steering direction counts once the car has actually swung `minSwing` px. */
+  countWeave(dir) {
+    const w = this.sc.weave;
+    if (!w || dir === 0) return;
+    if (w.dir !== 0 && dir !== w.dir && Math.abs(this.player.y - w.lastY) >= SC_GAME.minSwing) {
+      w.weaves += 1;
+      w.pending = (w.pending || 0) + 1;
+      w.lastY = this.player.y;
+      this.emit('weave', { heat: w.heat, zone: w.zone });
+    }
+    if (w.dir === 0) w.lastY = this.player.y;
+    w.dir = dir;
+  }
+
   addPopup(x, y, text, color = '#ffd400') {
     this.popups.push({ x, y, text, color, age: 0, life: 1.1 });
   }
@@ -227,7 +248,7 @@ export class World {
     const wdt = dt * lerp(1, 0.45, this.cine); // world time for everything that could hit you
     this.updateWeather(dt);
     this.updateVenue(dt);
-    this.updateSafetyCar(dt);
+    this.updateSafetyCar(dt, input);
     this.updatePit(dt, input);
     this.updatePlayer(dt, input);
     this.updateSpawns(wdt);
@@ -350,35 +371,62 @@ export class World {
   }
 
   // ----- safety car -----
-  updateSafetyCar(dt) {
+  /** True while the car is off your hands behind the safety car (not when you have called for the box). */
+  get neutralised() { return this.sc.active && this.sc.neutral && !this.pit.inLane && !this.pit.requested; }
+  updateSafetyCar(dt, input) {
     const sc = this.sc;
     if (this.penalty > 0) this.penalty = Math.max(0, this.penalty - dt);
     if (sc.restartTimer > 0) sc.restartTimer = Math.max(0, sc.restartTimer - dt);
     if (sc.grace > 0) sc.grace = Math.max(0, sc.grace - dt);
 
     if (!sc.active) {
+      // the jump: throttle within the window after the green, but only if you were not already on it
+      if (sc.jump > 0) {
+        sc.jump = Math.max(0, sc.jump - dt);
+        const go = input.right || input.boost || input.pointerBoost;
+        if (!go) sc.jumpArmed = true;
+        else if (sc.jumpArmed) {
+          sc.jump = 0;
+          this.bonus += SC_GAME.jumpBonus;
+          this.run.scJumps += 1;
+          this.addPopup(this.player.x, this.player.y - 80, `+${SC_GAME.jumpBonus} JUMP`, '#2ecc71');
+          this.emit('scJump');
+        }
+      }
       sc.cooldown -= dt;
       if (sc.cooldown <= 0 && !this.pit.inLane && Math.random() < SAFETY_CAR.chancePerSecond * dt) this.deploySafetyCar();
       return;
     }
     sc.timer -= dt;
     const car = sc.car;
+    // once the field has bunched up the race is neutralised: the car is taken off you until the green
+    if (!sc.neutral && sc.grace <= 0 && sc.phase === 'deployed' && !this.pit.inLane && !this.pit.requested) {
+      sc.neutral = true;
+      // the weave starts from wherever the tyres actually are, the car from wherever it is
+      sc.weave = { heat: clamp(this.tyre.temp, 0.35, 0.8), dir: 0, lastY: this.player.y, weaves: 0, inBand: 0, total: 0, zone: 'warm' };
+      this.ers.boosting = false;
+      this.emit('scNeutral');
+    }
     // the safety car sweeps in from the right and settles ahead of the player
     if (sc.phase === 'deployed') {
       const targetX = this.player.x + 340;
       car.x += (targetX - car.x) * Math.min(1, dt * 2.2);
       car.y += ((this.trackTop + this.trackBottom) / 2 - car.y) * Math.min(1, dt * 2);
       car.frame = (car.frame + this.speed * dt * 0.02) % 8;
-      if (sc.timer <= 3) {
+      if (sc.timer <= SC_GAME.countdown) {
         sc.phase = 'ending';
+        sc.lastCount = -1;
         this.emit('scEnding');
       }
     } else if (sc.phase === 'ending') {
-      // peels off into the pit lane
+      // peels off into the pit lane while the countdown runs: 3, 2, 1, green
       car.y += (this.pitY - car.y) * Math.min(1, dt * 2.5);
       car.x += 160 * dt;
       car.frame = (car.frame + this.speed * dt * 0.02) % 8;
-      if (sc.timer <= 0) this.endSafetyCar();
+      sc.countdown = Math.max(0, sc.timer);
+      const n = Math.ceil(sc.countdown);
+      if (n !== sc.lastCount && n > 0) { sc.lastCount = n; this.emit('scCount', { n }); }
+      if (sc.timer <= 0) this.endSafetyCar(input);
     }
   }
   deploySafetyCar() {
@@ -404,19 +452,39 @@ export class World {
     });
     this.emit('scDeployed');
   }
-  endSafetyCar() {
+  endSafetyCar(input = {}) {
     const sc = this.sc;
     sc.active = false;
     sc.phase = 'none';
     sc.car = null;
+    sc.countdown = -1;
     sc.cooldown = SAFETY_CAR.minGap;
     sc.restartTimer = SAFETY_CAR.restartWindow;
+    // the jump window opens now; being on the throttle already is going early (no bonus until you lift and go again)
+    sc.jump = SC_GAME.jumpWindow;
+    sc.jumpArmed = !(input.right || input.boost || input.pointerBoost);
+    let popY = this.player.y - 50;
     if (sc.clean) {
       this.run.scClean += 1;
       this.bonus += SAFETY_CAR.restartBonus;
-      this.addPopup(this.player.x, this.player.y - 50, `+${SAFETY_CAR.restartBonus} CLEAN`, '#2ecc71');
+      this.addPopup(this.player.x, popY, `+${SAFETY_CAR.restartBonus} CLEAN`, '#2ecc71');
+      popY -= 26;
     }
-    this.emit('scRestart', { clean: sc.clean });
+    // the weave pays out: warm tyres restart with grip and a bonus, cold ones restart on ice
+    const w = sc.weave;
+    let warm = null, weaveBonusPts = 0;
+    if (w && w.total > 0.5) {
+      weaveBonusPts = weaveBonus(w.inBand, w.total);
+      warm = weaveZone(w.heat) === 'warm';
+      if (warm) this.run.warmRestarts += 1;
+      if (weaveBonusPts > 0) this.addPopup(this.player.x, popY, `+${weaveBonusPts} ${warm ? 'WARM TYRES' : 'WEAVE'}`, '#ffd400');
+      else this.addPopup(this.player.x, popY, weaveZone(w.heat) === 'cold' ? 'COLD TYRES' : 'BLISTERED', weaveZone(w.heat) === 'cold' ? '#7df9ff' : '#ff3b3b');
+      this.bonus += weaveBonusPts;
+      this.run.scWeaves += w.weaves;
+    }
+    sc.neutral = false;
+    sc.weave = null;
+    this.emit('scRestart', { clean: sc.clean, warm, weaveBonus: weaveBonusPts });
   }
 
   updatePit(dt, input) {
@@ -608,7 +676,12 @@ export class World {
       ? 0
       : playerSpeed({ elapsed: this.elapsed, throttle: p.throttle, boosting: this.ers.boosting, grip, inPit, spun: p.spin > 0, speedMul: this.car.speed });
     if (!inPit) target *= 1 + this.tow * SLIPSTREAM.speedBonus;
-    if (this.sc.active && !inPit) {
+    const neutral = this.neutralised;
+    if (neutral) {
+      // the car holds station behind the safety car on its own: throttle and speed are not yours
+      p.throttle += (1 - p.throttle) * Math.min(1, dt * PLAYER.throttleLerp);
+      target = baseSpeed(this.elapsed) * SAFETY_CAR.speedCap * SC_GAME.paceFactor;
+    } else if (this.sc.active && !inPit) {
       // capped at safety-car pace; lifting takes you below it so you can drop back from the car ahead
       const lift = clamp((p.throttle - PLAYER.throttleRange.min) / (1 - PLAYER.throttleRange.min), 0, 1);
       target = Math.min(target, baseSpeed(this.elapsed) * SAFETY_CAR.speedCap * lerp(SAFETY_CAR.liftFloor, 1, lift));
@@ -620,23 +693,37 @@ export class World {
 
     // vertical movement (grip-limited) — pointer overrides keys when active
     // (steering is handed to the pit-entry glide once you have called for the box; none on the grid)
+    const hasPointer = input.pointerY !== null && input.pointerY !== undefined;
     if (!inPit && !this.pit.requested && this.racing) {
       let dir = 0;
       if (input.up) dir -= 1;
       if (input.down) dir += 1;
-      if (input.pointerY !== null && input.pointerY !== undefined) {
+      if (hasPointer && !neutral) {
         const ty = clamp(input.pointerY * this.height, this.trackTop, this.trackBottom);
         const dy = ty - p.y;
         dir = Math.abs(dy) < 6 ? 0 : Math.sign(dy);
+      } else if (hasPointer && this.pointerLastY !== null) {
+        // weaving by touch: the car mirrors the finger's direction of travel, so a wiggle is a weave
+        const dy = input.pointerY - this.pointerLastY;
+        if (Math.abs(dy) > 0.002) dir = Math.sign(dy);
       }
       if (p.spin > 0) dir *= 0.3;
-      const vmax = PLAYER.verticalSpeed * this.car.handling * lerp(0.5, 1, clamp(grip, 0, 1));
+      let vmax = PLAYER.verticalSpeed * this.car.handling * lerp(0.5, 1, clamp(grip, 0, 1));
+      const half = PLAYER.height / 2;
+      let lo = this.trackTop + half - 12;
+      let hi = this.trackBottom - half + 12;
+      if (neutral) {
+        // the weave: a narrow band behind the safety car; outside it the car brings itself in
+        const centre = (this.trackTop + this.trackBottom) / 2;
+        lo = centre - SC_GAME.weaveAmplitude;
+        hi = centre + SC_GAME.weaveAmplitude;
+        vmax *= SC_GAME.weaveSpeed;
+        if (p.y < lo - 2 || p.y > hi + 2) dir = Math.sign(centre - p.y);
+        else this.countWeave(dir);
+      }
       const targetVy = dir * vmax;
       p.vy += (targetVy - p.vy) * Math.min(1, dt * 10);
       p.y += p.vy * dt;
-      const half = PLAYER.height / 2;
-      const lo = this.trackTop + half - 12;
-      const hi = this.trackBottom - half + 12;
       if (p.y < lo) { p.y = lo; p.vy = Math.max(0, p.vy); }
       if (p.y > hi) { p.y = hi; p.vy = Math.min(0, p.vy); }
       p.tilt += ((p.vy / vmax) * 0.16 - p.tilt) * Math.min(1, dt * 8);
@@ -647,8 +734,20 @@ export class World {
       p.tilt *= 0.9;
     }
 
+    this.pointerLastY = hasPointer ? input.pointerY : null;
+
     // tyre temperature: fresh rubber warms with speed and steering, rain cools it
-    if (!inPit) {
+    if (neutral) {
+      // ...but at safety-car pace only the weave keeps them warm, and it is what you restart on
+      const w = this.sc.weave;
+      w.heat = weaveHeat(w.heat, dt, w.pending || 0);
+      w.pending = 0;
+      w.zone = weaveZone(w.heat);
+      w.total += dt;
+      if (w.zone === 'warm') w.inBand += dt;
+      else if (w.zone === 'hot' && !this.tyre.punctured) this.tyre.wear = Math.min(100, this.tyre.wear + SC_GAME.blisterWear * dt);
+      this.tyre.temp = w.heat;
+    } else if (!inPit) {
       const heat = (0.6 + 0.6 * (this.speed / SPEED.base) + Math.abs(p.vy) / PLAYER.verticalSpeed) / TYRE_TEMP.warmupSeconds;
       this.tyre.temp = clamp(this.tyre.temp + heat * dt - this.rain * TYRE_TEMP.rainCooling * dt, 0, 1);
     }
@@ -712,7 +811,7 @@ export class World {
       if (this.sc.active) {
         // bunched field: slow rivals you are not allowed to pass
         this.spawnTimer = spawnInterval(this.elapsed) * rand(1.6, 2.4);
-        if (this.sc.phase === 'deployed') this.spawnHazard('rival', { scRival: true });
+        if (this.sc.phase === 'deployed' && !this.sc.neutral) this.spawnHazard('rival', { scRival: true });
       } else {
         this.spawnTimer = spawnInterval(this.elapsed) * rand(0.75, 1.25);
         this.spawnHazard(pickHazard(this.elapsed));
@@ -849,14 +948,15 @@ export class World {
       if (hz.x < -margin || hz.x > this.width + margin + 600) continue;
 
       // interactions — none while boxing, merging back, or in the grace moment after rejoining
-      if (!this.pit.inLane && !this.pit.requested && p.grace <= 0) this.collide(hz, prect, p);
+      // (the neutralised car is untouchable: the field is bunched and the stewards are watching)
+      if (!this.pit.inLane && !this.pit.requested && p.grace <= 0 && !this.neutralised) this.collide(hz, prect, p);
       if (hz.dead) continue;
 
       // overtake bookkeeping: rival fully behind the player
       if (hz.type === 'rival' && !hz.passed && !hz.fromBehind && hz.x + hz.w / 2 < prect.x) {
         hz.passed = true;
-        // cars drifting past while you sit in the pits are not overtakes
-        if (!this.pit.inLane) this.onOvertake(hz);
+        // cars drifting past while you sit in the pits, or while the race is neutralised, are not overtakes
+        if (!this.pit.inLane && !this.neutralised) this.onOvertake(hz);
       }
       survivors.push(hz);
     }
