@@ -1,6 +1,6 @@
 // Bootstrap: wires input, world, renderer, audio and the DOM screens together.
 import { COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, SPEED, STORAGE_KEYS, TYRES, VENUES, WORLD } from './config.js';
-import { Input } from './input.js';
+import { Input, detectTouch } from './input.js';
 import { World } from './world.js';
 import { Renderer } from './render.js';
 import { AudioEngine, TRACKS } from './audio.js';
@@ -34,12 +34,16 @@ const PORTRAITS = {
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 const input = new Input(canvas);
+// Phones and tablets get the touch pad, touch wording on the menus and touch coach tips.
+const touch = detectTouch();
+if (touch) document.body.classList.add('touch');
 const audio = new AudioEngine();
 // Which optional meme-pack files exist (empty when opened from disk / no server).
 const assetsAvailable = fetch('/api/assets', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
   .then((a) => a && Array.isArray(a.clips) ? { engine: [], ...a } : { clips: [], drivers: [], engine: [] });
 audio.setAvailable(assetsAvailable);
 const renderer = new Renderer(canvas, assets);
+renderer.touch = touch;
 // The car you drive: remembered between visits, chosen on the title screen.
 let car = carById((() => { try { return localStorage.getItem(STORAGE_KEYS.car); } catch { return null; } })());
 let career = Career.load();
@@ -75,6 +79,7 @@ function startGame() {
   state = 'playing';
   show(null);
   audio.resume();
+  if (touch) goFullscreen();
   // the band waits for the lights; on the grid it is just the engine and the wall
   radio('gridStart');
   $('#gameOverScreen').classList.remove('revealed');
@@ -82,6 +87,7 @@ function startGame() {
 function pause() {
   if (state !== 'playing') return;
   state = 'paused';
+  input.clear();
   $('#pauseLine').textContent = `Race suspended. ${world.car.name} · ${world.venue.name} · ${positionLabel(world.overtakes)}`;
   show('pause');
   audio.suspend();
@@ -388,6 +394,60 @@ input.on('sfx', () => { audio.init(); audio.toggleSfx(); syncToggles(); });
 input.on('compound', (i) => { if (state === 'playing') world.setNextCompound(COMPOUND_ORDER[i]); });
 input.on('compound-next', () => { if (state === 'playing') world.cycleCompound(); });
 
+// ---------- touch pad ----------
+const touchPad = $('#touchPad');
+const steerHint = $('#steerHint');
+const rotateHint = $('#rotateHint');
+const tyreBtn = touchPad.querySelector('[data-pad="tyre"]');
+const ersBtn = touchPad.querySelector('[data-pad="boost"]');
+/** Where the car was (0..1 of the view) when the steering finger came down: touch steering is relative to it. */
+let steerAnchor = 0.5;
+let steered = false;
+input.on('steer-start', () => { steerAnchor = world.player.y / world.height; if (state === 'playing') steered = true; });
+if (touch) {
+  touchPad.querySelector('[data-slot="box"]').replaceWith(boxBtn);
+  input.bindPadButton(touchPad.querySelector('[data-pad="pause"]'), { press: 'pause' });
+  input.bindPadButton(tyreBtn, { press: 'compound-next' });
+  input.bindPadButton(touchPad.querySelector('[data-pad="left"]'), { hold: 'left' });
+  input.bindPadButton(touchPad.querySelector('[data-pad="right"]'), { hold: 'right' });
+  input.bindPadButton(ersBtn, { hold: 'boost', press: 'action' }); // doubles as the wheel gun in the box
+  touchPad.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+/** Full screen and landscape where the browser allows it (Android; iOS only via "add to home screen"). */
+function goFullscreen() {
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (req && !document.fullscreenElement) {
+    try { Promise.resolve(req.call(el, { navigationUI: 'hide' })).catch(() => {}); } catch { /* ignore */ }
+  }
+  try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch { /* not supported */ }
+}
+let padKey = '';
+function syncTouchPad() {
+  if (!touch) return;
+  const racing = state === 'playing' && !world.gameOver;
+  touchPad.hidden = !racing;
+  steerHint.hidden = !(racing && !steered && world.racing && world.start.sinceGo < 8);
+  const nc = COMPOUNDS[world.nextCompound];
+  const empty = world.ers.charge < ERS.minToEngage;
+  const key = `${nc.id}|${empty}`;
+  if (key === padKey) return;
+  padKey = key;
+  tyreBtn.style.setProperty('--tyre', nc.color);
+  tyreBtn.querySelector('b').textContent = nc.short;
+  ersBtn.classList.toggle('empty', empty);
+}
+// Portrait phone: the track is a landscape thing. Red-flag the race until the phone turns back.
+const portrait = matchMedia('(orientation: portrait)');
+let pausedByRotation = false;
+function syncRotate() {
+  const show = touch && portrait.matches && (state === 'playing' || state === 'paused');
+  rotateHint.hidden = !show;
+  if (show && state === 'playing') { pause(); pausedByRotation = true; }
+  else if (!portrait.matches && pausedByRotation) { pausedByRotation = false; if (state === 'paused') resume(); }
+}
+portrait.addEventListener('change', syncRotate);
+
 $('#startBtn').addEventListener('click', startGame);
 $('#resumeBtn').addEventListener('click', resume);
 $('#restartBtn').addEventListener('click', startGame);
@@ -520,6 +580,8 @@ function newDemoWorld() {
 let demoWorld = newDemoWorld();
 selectCar(car.id); // highlight the remembered car now that everything it touches exists
 const demoInput = { up: false, down: false, left: false, right: false, boost: false, pointerY: null };
+/** A thumb travels less than the car: 1 view-height of drag moves the car this many view-heights. */
+const TOUCH_STEER_GAIN = 1.6;
 
 function frame(now) {
   let dt = Math.min(0.05, (now - last) / 1000);
@@ -540,11 +602,15 @@ function frame(now) {
     if (demoWorld.gameOver) demoWorld = newDemoWorld();
     renderer.render(demoWorld, null, dt);
     syncBoxButton();
+    syncTouchPad();
   } else {
+    // touch: the finger drags the car from where it was (relative, so the thumb never hides it);
+    // mouse: the car follows the cursor's height
+    const ptr = input.pointer;
     const st = {
-      ...input.state,
-      pointerY: input.pointer.active ? input.pointer.y : null,
-      pointerBoost: input.pointer.active && input.pointer.boost,
+      ...input.held,
+      pointerY: !ptr.active ? null : touch ? clamp(steerAnchor + (ptr.y - ptr.y0) * TOUCH_STEER_GAIN, 0, 1) : ptr.y,
+      pointerBoost: !touch && ptr.active && ptr.boost,
     };
     if (state === 'playing' || state === 'over') world.update(dt, st);
     if (hud.radio) {
@@ -560,6 +626,7 @@ function frame(now) {
     hud.musicOn = audio.musicOn;
     renderer.render(world, hud, dt);
     syncBoxButton();
+    syncTouchPad();
     // audio follows the sim
     const ratio = clamp(world.speed / SPEED.max, 0, 1);
     const engineOn = state === 'playing' && !(world.pit.inLane && world.pit.phase === 'stop');
@@ -579,6 +646,7 @@ requestAnimationFrame((t) => { last = t; frame(t); });
 
 // Pause when the tab is hidden so nobody dies in the background.
 document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'playing') pause(); });
+syncRotate();
 
 // Debug hook (used by the smoke test): window.raweCeek.world etc.
 window.raweCeek = { get world() { return world; }, get state() { return state; }, get car() { return car; }, startGame, pause, resume, selectCar };

@@ -2,8 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#0b0d12" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Rawe Ceek" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="assets/favicon.png" />
     <title>Rawe Ceek</title>
     <link rel="icon" href="assets/favicon.png" />
     <link rel="stylesheet" href="src/style.css" />
@@ -11,6 +17,18 @@
   <body>
     <canvas id="game" aria-label="Rawe Ceek race"></canvas>
     <button id="boxBtn" class="box" hidden aria-label="Box this lap"><b>BOX</b><span></span></button>
+
+    <!-- Touch pad: shown on phones and tablets while racing. Drag on the track to steer; these hold the rest. -->
+    <div id="touchPad" class="pad" hidden aria-label="Touch controls">
+      <button class="pad-btn small" data-pad="pause" aria-label="Pause"><b>❚❚</b></button>
+      <button class="pad-btn tyre" data-pad="tyre" aria-label="Next tyre compound"><b>M</b><span>tyre</span></button>
+      <span class="pad-slot" data-slot="box"></span>
+      <button class="pad-btn" data-pad="left" aria-label="Lift"><b>◀</b><span>lift</span></button>
+      <button class="pad-btn" data-pad="right" aria-label="Push"><b>▶</b><span>push</span></button>
+      <button class="pad-btn ers" data-pad="boost" aria-label="ERS boost"><b>ERS</b><span>boost</span></button>
+    </div>
+    <p id="steerHint" class="steer-hint" hidden>Drag anywhere on the track to steer</p>
+    <div id="rotateHint" class="rotate" hidden><div><b>Turn your phone sideways</b><span>Rawe Ceek races in landscape</span></div></div>
 
     <!-- Title -->
     <section id="titleScreen" class="screen">
@@ -21,12 +39,21 @@
         <div class="garage">
           <div class="garage-head"><span class="kicker">Your car</span><span id="carTag" class="car-tag"></span></div>
           <div id="carList" class="cars" role="listbox" aria-label="Choose your car"></div>
-          <p class="car-hint"><kbd>◀</kbd><kbd>▶</kbd> or click to change car · your team-mate is the other car in these colours</p>
+          <p class="car-hint kbd-only"><kbd>◀</kbd><kbd>▶</kbd> or click to change car · your team-mate is the other car in these colours</p>
+          <p class="car-hint touch-only">Tap a car to pick it · your team-mate is the other car in these colours</p>
         </div>
-        <button id="startBtn" class="primary">Lights out — press Enter</button>
+        <button id="startBtn" class="primary"><span class="kbd-only">Lights out — press Enter</span><span class="touch-only">Lights out — tap to race</span></button>
         <p id="titleBest" class="best"></p>
         <p id="careerLine" class="career"></p>
-        <div class="controls">
+        <div class="controls touch-only">
+          <div><b>Drag</b> on the track to steer</div>
+          <div><b>▶ PUSH</b> hold to go faster · <b>◀ LIFT</b> to save tyres</div>
+          <div><b>ERS</b> hold to boost · fires the wheel gun in the box</div>
+          <div><b>TYRE</b> cycles the compound for your next stop</div>
+          <div><b>BOX</b> lights up green when the window opens</div>
+          <div>Landscape works best · add to your home screen for full screen</div>
+        </div>
+        <div class="controls kbd-only">
           <div><kbd>▲</kbd><kbd>▼</kbd> steer</div>
           <div><kbd>▶</kbd> push <kbd>◀</kbd> lift</div>
           <div><kbd>Space</kbd> ERS boost</div>
@@ -47,8 +74,8 @@
             <li><b>Damage</b>: the front wing (debris, nose-to-tail contact) costs top speed; the floor (side-by-side rubs) costs grip. A gentle touch is survivable; a hard frontal hit, or any hit on a part already at 100 %, is a crash. A rolling tyre or a stranded car is always a crash. Oil spins you. The pit crew fixes everything with the tyres.</li>
             <li>Tyres wear faster the harder you push. Past ~65% wear grip falls off a cliff; at 100% you puncture. Fresh tyres are cold for a few seconds.</li>
             <li>Softs are quick and short-lived, hards are slow and last. Inters and wets only work in the rain — and at Spa, it rains.</li>
-            <li>A pit window opens every ~26 s. Press <b>B</b> or tap the <b>BOX BOX</b> button (or steer up into the green gap) to box; pick the compound with 1–5 first.</li>
-            <li><b>In the box you are the pit crew</b>: four wheels, one at a time. Fire the gun (<b>Space</b>, <b>B</b> or tap) when the sweeping marker is in the green — the cyan centre is a perfect. Miss and the nut cross-threads (+1.3 s). Some wheels are <b>jammed</b> with a tiny zone. Under 2.0 s is a record stop (+100); a clean stop is +50.</li>
+            <li>A pit window opens every ~26 s. Press <b>B</b> or tap the <b>BOX BOX</b> button (or steer up into the green gap) to box; pick the compound with 1–5 (or the <b>TYRE</b> button) first.</li>
+            <li><b>In the box you are the pit crew</b>: four wheels, one at a time. Fire the gun (<b>Space</b>, <b>B</b>, <b>ERS</b> or tap) when the sweeping marker is in the green — the cyan centre is a perfect. Miss and the nut cross-threads (+1.3 s). Some wheels are <b>jammed</b> with a tiny zone. Under 2.0 s is a record stop (+100); a clean stop is +50.</li>
             <li>Sit directly behind a rival for the <b>tow</b>: extra speed and the battery charges. Some rivals defend.</li>
             <li><b>Safety car</b>: slow down and do not overtake, or it's a 5 s penalty. The restart pays double for overtakes.</li>
             <li>Every 1.5 km is a Grand Prix: +150 and 25 championship points, then the calendar moves on. Fourteen venues, three of them at night.</li>
@@ -79,8 +106,8 @@
         <h2>Red flag</h2>
         <p id="pauseLine">Race suspended.</p>
         <div class="row">
-          <button id="resumeBtn" class="primary">Resume (P)</button>
-          <button id="restartBtn">Restart (R)</button>
+          <button id="resumeBtn" class="primary">Resume<span class="kbd-only"> (P)</span></button>
+          <button id="restartBtn">Restart<span class="kbd-only"> (R)</span></button>
         </div>
         <div class="row">
           <button data-music>Music: on</button>
@@ -105,7 +132,7 @@
         </form>
         <p id="submitStatus" class="status"></p>
         <div class="row">
-          <button id="playAgainBtn" class="primary">Rawe again (Enter / R)</button>
+          <button id="playAgainBtn" class="primary">Rawe again<span class="kbd-only"> (Enter / R)</span></button>
         </div>
       </div>
     </section>

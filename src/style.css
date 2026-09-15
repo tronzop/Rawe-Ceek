@@ -155,3 +155,84 @@ input:focus { outline: 2px solid var(--red); outline-offset: 1px; }
 .box:active { transform: translateX(-50%) translateY(1px); }
 @keyframes boxpulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(46,204,113,0.6); } 50% { box-shadow: 0 0 0 12px rgba(46,204,113,0); } }
 @media (max-width: 900px) { .box { bottom: 128px; } }
+
+/* ---------- phone / tablet: the touch pad ----------
+   body.touch is set when the pointer is coarse (or ?touch=1). Keyboard-only hints hide,
+   the BOX button moves into the pad, and the pad sits in the free grass strip along the
+   bottom between the speedo and the tyre widget. */
+.touch-only { display: none; }
+.touch .touch-only { display: initial; }
+.touch .controls.touch-only { display: grid; }
+.touch .kbd-only { display: none !important; }
+.touch .controls b { color: var(--text); }
+.touch button, .touch .car { min-height: 44px; }
+.touch .car { min-height: 0; }
+.touch .screen { padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+
+.pad {
+  /* sits in the grass strip under the track (13% of the height): short buttons, wide enough for a thumb */
+  position: fixed; left: 50%; bottom: max(4px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 6;
+  display: flex; align-items: flex-end; gap: 8px; padding: 0 8px;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.pad[hidden] { display: none; }
+.pad-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  width: 66px; height: 50px; padding: 0; border-radius: 14px;
+  background: rgba(8,10,16,0.78); border: 2px solid rgba(255,255,255,0.18); color: #fff;
+  font: 700 12px var(--font); letter-spacing: 0.06em; text-transform: uppercase;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transition: background 0.1s, border-color 0.1s, transform 0.08s;
+}
+.pad-btn:hover { background: rgba(8,10,16,0.78); }
+.pad-btn b { font-size: 17px; line-height: 1; }
+.pad-btn span { font-size: 9px; color: var(--muted); font-weight: 600; }
+.pad-btn.held, .pad-btn:active { background: rgba(255,255,255,0.22); border-color: #fff; transform: translateY(1px); }
+.pad-btn.small { width: 40px; height: 50px; border-radius: 12px; }
+.pad-btn.small b { font-size: 12px; }
+.pad-btn.ers { width: 84px; border-radius: 25px; border-color: rgba(125,249,255,0.55); }
+.pad-btn.ers b { color: #7df9ff; font-size: 15px; letter-spacing: 0.1em; }
+.pad-btn.ers.held { background: rgba(125,249,255,0.35); border-color: #7df9ff; box-shadow: 0 0 22px rgba(125,249,255,0.55); }
+.pad-btn.ers.empty { opacity: 0.5; }
+.pad-btn.tyre { --tyre: #ffd400; border-color: color-mix(in srgb, var(--tyre) 60%, transparent); }
+.pad-btn.tyre b { color: var(--tyre); font-family: var(--mono); }
+.pad-btn.tyre.held { background: color-mix(in srgb, var(--tyre) 30%, rgba(8,10,16,0.78)); }
+.pad-slot { display: contents; }
+/* the BOX button moves into the pad on touch devices */
+.touch .pad .box { position: static; transform: none; min-width: 0; width: 88px; height: 50px; padding: 0 6px; border-radius: 14px; gap: 0; }
+.touch .pad .box b { font-size: 14px; }
+.touch .pad .box span { font-size: 9px; line-height: 1.1; white-space: nowrap; max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
+.touch .pad .box:active { transform: translateY(1px); }
+.touch .pad .box[hidden] { display: flex; opacity: 0.35; pointer-events: none; }
+
+.steer-hint {
+  position: fixed; left: 14px; top: 50%; transform: translateY(-50%); z-index: 5; margin: 0;
+  max-width: 130px; color: rgba(255,255,255,0.75); font: 600 13px var(--font); text-shadow: 0 1px 3px #000;
+  pointer-events: none; animation: nudge 1.6s ease-in-out infinite;
+}
+.steer-hint[hidden] { display: none; }
+@keyframes nudge { 0%, 100% { transform: translateY(-58%); } 50% { transform: translateY(-42%); } }
+
+/* portrait phones: the track is a landscape thing */
+.rotate {
+  position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; text-align: center;
+  background: rgba(11,13,18,0.92); color: var(--text); padding: 24px;
+}
+.rotate[hidden] { display: none; }
+.rotate div { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.rotate div::before { content: '📱'; font-size: 56px; display: block; animation: turn 1.8s ease-in-out infinite; }
+.rotate b { font-size: 20px; }
+.rotate span { color: var(--muted); font-size: 14px; }
+@keyframes turn { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+
+/* landscape phones are short: tighten the title screen so the start button is a thumb away */
+@media (max-height: 500px) {
+  .touch .title h1 { font-size: 40px; }
+  .touch .panel { padding: 14px 16px; }
+  .touch .tagline { margin-bottom: 10px; }
+  .touch .rules { margin-top: 8px; }
+  .touch .screen { gap: 12px; }
+  .touch .car { width: 112px; }
+  .touch .controls { font-size: 12px; margin: 10px 0 8px; }
+  .touch .box { bottom: 10px; }
+}

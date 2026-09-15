@@ -1,10 +1,27 @@
-// Keyboard + pointer input. Exposes a polled state object and an event emitter
-// for one-shot actions (pause, start, compound select...).
+// Keyboard + pointer + touch-pad input. Exposes a polled state object and an event
+// emitter for one-shot actions (pause, start, compound select...).
+
+/** True on phones and tablets: a coarse pointer with no hover. `?touch=1|0` in the URL forces it either way. */
+export function detectTouch() {
+  try {
+    const q = new URLSearchParams(location.search).get('touch');
+    if (q === '1' || q === 'on') return true;
+    if (q === '0' || q === 'off') return false;
+    const coarse = matchMedia('(pointer: coarse)').matches;
+    const noHover = matchMedia('(hover: none)').matches;
+    return (coarse && noHover) || (coarse && navigator.maxTouchPoints > 1);
+  } catch {
+    return false;
+  }
+}
 
 export class Input {
   constructor(canvas) {
     this.state = { up: false, down: false, left: false, right: false, boost: false };
-    this.pointer = { active: false, y: null, boost: false };
+    // held state from the on-screen touch pad; OR-ed with the keyboard in `held`
+    this.pad = { up: false, down: false, left: false, right: false, boost: false };
+    // y0 = where the steering finger came down (0..1 of the canvas), y = where it is now
+    this.pointer = { active: false, id: null, y: null, y0: null, boost: false };
     this.handlers = new Map();
     this.canvas = canvas;
 
@@ -46,23 +63,73 @@ export class Input {
     window.addEventListener('blur', () => this.clear());
 
     // Pointer: drag anywhere to steer vertically; touching the right quarter also boosts.
+    // Only the first finger down steers, so a second thumb on the pad never yanks the car.
     const onPointer = (e) => {
       if (e.pointerType === 'mouse' && e.buttons === 0) return;
+      if (this.pointer.active && e.pointerId !== this.pointer.id) return;
       const rect = canvas.getBoundingClientRect();
+      const y = (e.clientY - rect.top) / rect.height;
+      if (!this.pointer.active) { this.pointer.id = e.pointerId; this.pointer.y0 = y; }
       this.pointer.active = true;
-      this.pointer.y = (e.clientY - rect.top) / rect.height;
+      this.pointer.y = y;
       this.pointer.boost = e.clientX - rect.left > rect.width * 0.75;
     };
-    canvas.addEventListener('pointerdown', (e) => { onPointer(e); this.emit('tap'); });
+    canvas.addEventListener('pointerdown', (e) => {
+      const first = !this.pointer.active;
+      onPointer(e);
+      if (first) this.emit('steer-start');
+      this.emit('tap');
+    });
     canvas.addEventListener('pointermove', onPointer);
-    const off = () => { this.pointer.active = false; this.pointer.y = null; this.pointer.boost = false; };
+    const off = (e) => {
+      if (e && e.pointerId !== this.pointer.id) return;
+      this.pointer.active = false; this.pointer.id = null; this.pointer.y = null; this.pointer.y0 = null; this.pointer.boost = false;
+    };
     canvas.addEventListener('pointerup', off);
     canvas.addEventListener('pointercancel', off);
     canvas.addEventListener('pointerleave', off);
+    window.addEventListener('blur', () => off());
+  }
+
+  /** Keyboard state OR-ed with the touch pad, in the shape the world polls. */
+  get held() {
+    const s = this.state, p = this.pad;
+    return { up: s.up || p.up, down: s.down || p.down, left: s.left || p.left, right: s.right || p.right, boost: s.boost || p.boost };
+  }
+
+  /**
+   * Wires a touch-pad button. `hold` names a pad axis held while the finger is down;
+   * `press` is an event emitted on every press (and `payload` goes with it). Fingers
+   * that slide off are released, and a second finger on the same button is ignored.
+   */
+  bindPadButton(el, { hold = null, press = null, payload } = {}) {
+    let id = null;
+    const down = (e) => {
+      if (id !== null) return;
+      id = e.pointerId;
+      e.preventDefault();
+      try { el.setPointerCapture(e.pointerId); } catch { /* not all browsers */ }
+      el.classList.add('held');
+      if (hold) this.pad[hold] = true;
+      if (press) this.emit(press, payload);
+    };
+    const up = (e) => {
+      if (e.pointerId !== id) return;
+      id = null;
+      el.classList.remove('held');
+      if (hold) this.pad[hold] = false;
+    };
+    el.addEventListener('pointerdown', down);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    el.addEventListener('lostpointercapture', up);
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    el.addEventListener('click', (e) => e.preventDefault());
   }
 
   clear() {
     for (const k of Object.keys(this.state)) this.state[k] = false;
+    for (const k of Object.keys(this.pad)) this.pad[k] = false;
   }
   on(evt, fn) {
     if (!this.handlers.has(evt)) this.handlers.set(evt, []);

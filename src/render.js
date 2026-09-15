@@ -16,6 +16,14 @@ const COACH = {
     '[SPACE] ERS boost · sit right behind a rival for the tow',
     '[B] box when the window opens · [1]–[5] pick the next tyre',
   ],
+  // the same lessons for a thumb on the touch pad
+  touchTips: [
+    'Drag on the track to steer · hold [PUSH] to go faster · [LIFT] saves the tyres',
+    'Hold [ERS] to boost · sit right behind a rival for the tow',
+    'Tap [BOX] when it turns green · [TYRE] picks the next compound',
+  ],
+  grid: ['Hold for the lights · [▶] or [SPACE] the instant they go out for a GREAT START', 'A touch in the pack costs bodywork, not the race'],
+  touchGrid: ['Hold for the lights · tap [PUSH] or [ERS] the instant they go out for a GREAT START', 'A touch in the pack costs bodywork, not the race'],
 };
 
 /** Deterministic 0..1 noise from an integer seed (for scenery that must not flicker). */
@@ -30,6 +38,7 @@ export class Renderer {
     this.ctx = canvas.getContext('2d');
     this.assets = assets;
     this.view = { width: 1280, height: 720, scale: 1 };
+    this.touch = false; // set by main on phones: coach tips name the touch-pad buttons
     this.time = 0;
     this.zoom = 1;
     // pre-render the kerb strip as a pattern-ish tile for cheapness
@@ -946,7 +955,7 @@ export class Renderer {
       ctx.fillStyle = '#fff';
       ctx.font = `bold 11px ${FONT}`;
       ctx.textAlign = 'right';
-      ctx.fillText(g.hold > 0 ? (g.lastResult === 'miss' ? 'CROSS-THREADED…' : g.lastResult === 'perfect' ? 'PERFECT' : 'GOOD') : `FIRE  ·  SPACE / B / tap`, x + W - 14, y + 48);
+      ctx.fillText(g.hold > 0 ? (g.lastResult === 'miss' ? 'CROSS-THREADED…' : g.lastResult === 'perfect' ? 'PERFECT' : 'GOOD') : (this.touch ? 'FIRE  ·  ERS / tap' : 'FIRE  ·  SPACE / B / tap'), x + W - 14, y + 48);
     } else {
       ctx.fillStyle = '#2ecc71';
       ctx.font = `bold 12px ${FONT}`;
@@ -1649,15 +1658,16 @@ export class Renderer {
     const sinceGo = world.racing ? world.start.sinceGo : -1;
     if (sinceGo < 0) {
       const mid = (world.trackTop + world.trackBottom) / 2;
-      this.drawCoachCard(['Hold for the lights · [▶] or [SPACE] the instant they go out for a GREAT START', 'A touch in the pack costs bodywork, not the race'], W / 2, mid, { accent: '#ff3b3b', alpha: 0.95, anchor: 'middle' });
+      this.drawCoachCard(this.touch ? COACH.touchGrid : COACH.grid, W / 2, mid, { accent: '#ff3b3b', alpha: 0.95, anchor: 'middle' });
       return;
     }
+    const tips = this.touch ? COACH.touchTips : COACH.tips;
     const i = Math.floor(sinceGo / COACH.each);
-    if (i >= COACH.tips.length) return;
+    if (i >= tips.length) return;
     const t = sinceGo - i * COACH.each;
     const alpha = clamp(Math.min(t / 0.25, (COACH.each - t) / 0.35), 0, 1) * 0.95;
     // the middle lane again: nothing spawns during the launch, and the pack sits in the outer lanes
-    this.drawCoachCard([COACH.tips[i]], W / 2, (world.trackTop + world.trackBottom) / 2, { accent: '#ffd400', alpha, anchor: 'middle', step: `${i + 1}/${COACH.tips.length}` });
+    this.drawCoachCard([tips[i]], W / 2, (world.trackTop + world.trackBottom) / 2, { accent: '#ffd400', alpha, anchor: 'middle', step: `${i + 1}/${tips.length}` });
   }
 
   /**

@@ -24,7 +24,22 @@ Or open `index.html` straight from disk — everything works offline except the 
 | `B` / **BOX BOX** button | Box this lap — the car steers itself into the pits when the window is open (steering `▲` into the green gap still works) |
 | `P` / `Esc` | Pause · `R` restart · `M` music · `N` sound effects · `T` switch soundtrack |
 | `◀ ▶` (title screen) | Choose your car |
-| Touch / mouse | Drag to steer; press on the right quarter of the screen to boost |
+| Mouse | Drag on the track to steer; press on the right quarter of the screen to boost |
+
+### On a phone or tablet
+
+Phones and tablets get a touch pad automatically (anything with a coarse pointer and no hover; force it with `?touch=1` or off with `?touch=0`). Turn the phone sideways — in portrait the race red-flags itself until you do.
+
+| Touch | Action |
+| --- | --- |
+| Drag on the track | Steer — the car follows your thumb's movement, not its position, so it never hides the car |
+| **▶ PUSH** / **◀ LIFT** (hold) | Throttle, same as the arrow keys |
+| **ERS** (hold) | Boost; tapping it also fires the wheel gun in the box and launches you off the grid |
+| **TYRE** | Cycles the compound for your next stop |
+| **BOX** | Box this lap (green when the window is open) |
+| **❚❚** | Pause |
+
+The game asks for full screen and a landscape lock where the browser allows it (Android). On iOS use *Add to Home Screen* — the manifest opens it full screen in landscape.
 
 ### How it works
 
@@ -54,7 +69,8 @@ The four meme clips in `assets/` are used as they were intended: *pushing like a
 ## Project layout
 
 ```
-index.html          markup for the title / pause / game-over screens + the canvas
+index.html          markup for the title / pause / game-over screens, the touch pad + the canvas
+manifest.webmanifest  full-screen landscape when added to a phone home screen
 src/
   main.js           bootstrap, state machine, DOM wiring, main loop
   world.js          the simulation: player, hazards, tyres, pit, weather (no DOM)
@@ -62,7 +78,7 @@ src/
   config.js         every tunable in one place
   render.js         canvas renderer + HUD
   audio.js          samples, synth soundtrack, engine drone
-  input.js          keyboard + pointer
+  input.js          keyboard, pointer and the touch pad
   radio.js          pit-wall lines
   mariachi.js       the mariachi soundtrack: sequencer data + trumpet/guitarrón/vihuela synths
   cars.js           the garage: one car per team, stats, balance weights (tested)
