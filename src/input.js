@@ -33,7 +33,9 @@ export class Input {
       Space: 'boost', ShiftLeft: 'boost', ShiftRight: 'boost',
     };
     window.addEventListener('keydown', (e) => {
-      if (e.target && /^(INPUT|TEXTAREA|BUTTON)$/.test(e.target.tagName) && e.code !== 'Escape') return;
+      // leave typing and form controls alone (arrows on the soundtrack <select> mustn't cycle cars)
+      const t = e.target;
+      if (t && (/^(INPUT|TEXTAREA|BUTTON|SELECT|SUMMARY)$/.test(t.tagName) || t.isContentEditable) && e.code !== 'Escape') return;
       const k = keyMap[e.code];
       if (k) { this.state[k] = true; e.preventDefault(); }
       if (e.repeat) return;
@@ -64,20 +66,21 @@ export class Input {
 
     // Pointer: drag anywhere to steer vertically; touching the right quarter also boosts.
     // Only the first finger down steers, so a second thumb on the pad never yanks the car.
+    // Adopting a finger (on down, or on move once the first one lifts) re-anchors via steer-start.
     const onPointer = (e) => {
       if (e.pointerType === 'mouse' && e.buttons === 0) return;
       if (this.pointer.active && e.pointerId !== this.pointer.id) return;
       const rect = canvas.getBoundingClientRect();
       const y = (e.clientY - rect.top) / rect.height;
-      if (!this.pointer.active) { this.pointer.id = e.pointerId; this.pointer.y0 = y; }
+      const adopted = !this.pointer.active;
+      if (adopted) { this.pointer.id = e.pointerId; this.pointer.y0 = y; }
       this.pointer.active = true;
       this.pointer.y = y;
       this.pointer.boost = e.clientX - rect.left > rect.width * 0.75;
+      if (adopted) this.emit('steer-start');
     };
     canvas.addEventListener('pointerdown', (e) => {
-      const first = !this.pointer.active;
       onPointer(e);
-      if (first) this.emit('steer-start');
       this.emit('tap');
     });
     canvas.addEventListener('pointermove', onPointer);
