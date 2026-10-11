@@ -2,7 +2,7 @@
 import { COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, SC_GAME, SPEED, STORAGE_KEYS, TYRES, VENUES, WORLD } from './config.js';
 import { Input, detectTouch } from './input.js';
 import { World } from './world.js';
-import { Renderer } from './render.js';
+import { COACH, COACH_CARDS, COACH_CARD_DUR, Renderer, offerToast } from './render.js';
 import { AudioEngine, TRACKS } from './audio.js';
 import { radioLine } from './radio.js';
 import { Leaderboard } from './leaderboard.js';
@@ -52,15 +52,36 @@ audio.setAvailable(assetsAvailable);
 const renderer = new Renderer(canvas, assets);
 renderer.touch = touch;
 renderer.debugHitbox = params.get('hitbox') === '1';
+// phone HUD: ?hudscale=1.5 forces the corner-card scale; on touch the bottom cards keep clear of the pad (CSS px)
+renderer.hudOverride = Number(params.get('hudscale')) || null;
+renderer.padReserve = touch ? 440 : 0;
 // The car you drive: remembered between visits, chosen on the title screen.
 let car = carById((() => { try { return localStorage.getItem(STORAGE_KEYS.car); } catch { return null; } })());
 let career = Career.load();
-const hud = { radio: null, toast: null, damage: null, drs: null, best: Leaderboard.best(), musicOn: audio.musicOn, points: career.points };
+const hud = { radio: null, toast: null, damage: null, drs: null, coach: null, flag: null, best: Leaderboard.best(), musicOn: audio.musicOn, points: career.points };
 
 let state = 'title'; // title | playing | paused | over
 let world = new World(onWorldEvent, car);
 let last = performance.now();
 let submitted = false;
+
+// Run lifecycle: every delayed callback of a run goes through later(), so startGame can cancel the lot
+// (a restart within the retirement delay must not get the old run's panel, clip or venue line).
+const runTimers = new Set();
+function later(fn, ms) {
+  const id = setTimeout(() => { runTimers.delete(id); fn(); }, ms);
+  runTimers.add(id);
+  return id;
+}
+function clearRunTimers() {
+  for (const id of runTimers) clearTimeout(id);
+  runTimers.clear();
+}
+/** A pit-wall line a moment from now, dropped if the race it belonged to is over by then. */
+function radioLater(kind, ctx, ms) {
+  const w = world;
+  later(() => { if (state === 'playing' && world === w) radio(kind, ctx); }, ms);
+}
 
 function fit() {
   const view = renderer.fit(WORLD.height);
@@ -75,6 +96,10 @@ function show(name) {
 }
 function startGame() {
   audio.init();
+  // nothing from the last run carries over: its timers, its voice, its band
+  clearRunTimers();
+  audio.stopClips();
+  audio.stopMusic();
   world = new World(onWorldEvent, car);
   fit();
   world.reset();
@@ -83,6 +108,9 @@ function startGame() {
   hud.toast = null;
   hud.damage = null;
   hud.drs = null;
+  hud.coach = null;
+  hud.flag = null;
+  coachQueue.length = 0;
   radioQueue.length = 0;
   submitted = false;
   state = 'playing';
@@ -92,6 +120,10 @@ function startGame() {
   // the band waits for the lights; on the grid it is just the engine and the wall
   radio('gridStart');
   $('#gameOverScreen').classList.remove('revealed');
+  // a focused button would take the next Space / Enter; a portrait phone red-flags straight away
+  document.activeElement?.blur?.();
+  pausedByRotation = false;
+  syncRotate();
 }
 function pause() {
   if (state !== 'playing') return;
@@ -110,15 +142,18 @@ function resume() {
 }
 function gameOver(payload = {}) {
   state = 'over';
+  const run = world; // a restart before the callbacks below fire makes them stand down
+  const still = () => state === 'over' && world === run;
   audio.fadeOutMusic(0.7); // the band dies with the car
   audio.crashNoise();
-  setTimeout(() => say([Math.random() < 0.5 ? 'nomichaelno' : null, 'gameover'], { volume: 1 }), 250);
+  later(() => { if (still()) say([Math.random() < 0.5 ? 'nomichaelno' : null, 'gameover'], { volume: 1 }); }, 250);
   const previousBest = Leaderboard.best();
   hud.best = Leaderboard.recordBest(world.score);
   const newBest = world.score > previousBest && previousBest > 0;
   // portrait: a celebration on a new personal best; otherwise the driver you hit if we have their picture, else a crash picture
   const img = $('#sadGreg');
   assetsAvailable.then((a) => {
+    if (!still()) return;
     if (newBest) {
       const p = pick(PORTRAITS.celebrate);
       img.src = p.src; img.alt = p.alt;
@@ -174,7 +209,8 @@ function gameOver(payload = {}) {
   $('#submitStatus').textContent = '';
   $('#submitScore').disabled = false;
   // reveal after the crash animation has played (the freeze-frame on the impact, then the tumble)
-  setTimeout(() => {
+  later(() => {
+    if (!still()) return;
     show('over');
     requestAnimationFrame(() => screens.over.classList.add('revealed'));
     ($('#nameInput').value ? $('#submitScore') : $('#nameInput')).focus();
@@ -256,9 +292,54 @@ function say(names, opts = {}, kind = null, ctx) {
   if (kind && !clipLine(played)) radio(kind, ctx);
   return played;
 }
-function toast(text, color, sub) {
-  hud.toast = { text, color, sub, age: 0, dur: sub ? 2.2 : 1.6 };
+/**
+ * The big toast. `prio` decides who wins when two land together (a lower one never replaces a live
+ * higher one): 2 = the car or the race is in danger (wing or floor lost, puncture, penalty, cliff,
+ * safety car), 1 = race news (rain, green flag, pit result, lights out), 0 = everything else.
+ */
+function toast(text, color, sub, prio = 0) {
+  hud.toast = offerToast(hud.toast, { text, color, sub, prio, age: 0, dur: sub ? 2.2 : 1.6 });
 }
+// ---------- just-in-time coach cards ----------
+// Each card (render.js COACH_CARDS) shows once per browser, the first time its moment happens:
+// pit window, tow, cliff, contact, rain on slicks, safety car. Seen ids live in localStorage
+// (rc.coachSeen); private mode or blocked storage just means they show once per page load.
+const COACH_KEY = 'rc.coachSeen';
+const coachSeen = new Set((() => {
+  try { const v = JSON.parse(localStorage.getItem(COACH_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+})());
+const coachQueue = [];
+function saveCoachSeen() {
+  try { localStorage.setItem(COACH_KEY, JSON.stringify([...coachSeen])); } catch { /* storage blocked */ }
+}
+/** Asks for a coach card; it waits its turn behind the one on screen (and the opening tip). */
+function coach(id) {
+  if (!COACH_CARDS[id] || coachSeen.has(id) || coachQueue.includes(id) || hud.coach?.id === id) return;
+  coachQueue.push(id);
+}
+/** Per frame: age the card on screen, and bring up the next one once the opening tip is done. */
+function updateCoach(dt) {
+  if (hud.coach) {
+    hud.coach.age += dt;
+    if (hud.coach.age >= COACH_CARD_DUR) hud.coach = null;
+  }
+  if (state !== 'playing' || world.gameOver) return;
+  // the moments that are states rather than events
+  if (world.tow > 0.5) coach('tow');
+  if (world.raining && world.rain > 0.35 && COMPOUNDS[world.tyre.compound].wet === undefined) coach('rain');
+  if (hud.coach || !coachQueue.length || !world.racing || world.start.sinceGo < COACH.each) return;
+  const id = coachQueue.shift();
+  coachSeen.add(id); // seen once it is actually on screen, so a crash before it shows does not use it up
+  saveCoachSeen();
+  hud.coach = { id, age: 0 };
+}
+$('#resetTutorial').addEventListener('click', () => {
+  coachSeen.clear();
+  coachQueue.length = 0;
+  try { localStorage.removeItem(COACH_KEY); } catch { /* storage blocked */ }
+  $('#resetTutorial').textContent = 'Tutorial reset';
+});
+
 /** The retirement screen's score breakdown: World.run.scoreBy key, label, colour. */
 const SCORE_PARTS = [
   ['distance', 'Distance', '#c9ced9'], ['passes', 'Overtakes', '#ffd400'], ['close', 'Close calls', '#7df9ff'],
@@ -288,12 +369,12 @@ function onWorldEvent(evt, payload = {}) {
     case 'lightsOut':
       audio.startMusic();
       audio.blip(784, 0.25, 'square', 0.16);
-      toast('LIGHTS OUT', '#2ecc71', payload.jumped ? 'jump start — no bonus' : 'go go go');
+      toast('LIGHTS OUT', '#2ecc71', payload.jumped ? 'jump start — no bonus' : 'go go go', 1);
       // Crofty if the clip is loaded (subtitled), otherwise the pit wall
       if (!clipLine(say(['lightsout'], { volume: 1 }))) radio('start');
       break;
     case 'jumpStart': audio.blip(220, 0.15, 'sawtooth', 0.14); radio('jumpStart'); break;
-    case 'greatStart': audio.overtake(); toast('GREAT START', '#2ecc71', `${Math.round(payload.reaction * 1000)} ms reaction · +50`); radio('greatStart'); break;
+    case 'greatStart': audio.overtake(); toast('GREAT START', '#2ecc71', `${Math.round(payload.reaction * 1000)} ms reaction · +50`, 1); radio('greatStart'); break;
     case 'slowStart': radio('slowStart'); break;
     // --- damage ---
     case 'contact':
@@ -301,7 +382,8 @@ function onWorldEvent(evt, payload = {}) {
       if (payload.cause === 'debris') { audio.skid(0.2); radio('debris'); break; }
       audio.crunch(0.3 + payload.amount / 100);
       audio.skid(0.3);
-      if (payload.lost) toast(payload.part === 'wing' ? 'FRONT WING GONE' : 'FLOOR DESTROYED', '#ff3b3b', 'one more hit retires the car — box for repairs');
+      if (payload.lost) toast(payload.part === 'wing' ? 'FRONT WING GONE' : 'FLOOR DESTROYED', '#ff3b3b', 'one more hit retires the car — box for repairs', 2);
+      coach('contact');
       radio('contact', { part: payload.part, lost: payload.lost, driver: payload.driver });
       break;
     // no toast: the ERS bar flashes with what the battery actually got (see Renderer.drawHud)
@@ -313,13 +395,14 @@ function onWorldEvent(evt, payload = {}) {
       if (payload.km % 2 === 0 && world.player.throttle > 1.08 && !world.sc.active) say(['pushing'], { volume: 1, minGap: 10 });
       radio('milestone', { km: payload.km });
       break;
-    case 'tyresHot': toast('TYRE CLIFF', '#ffd400', 'grip falling away — box soon'); say(['bono'], { volume: 0.9, minGap: 20 }); radio('tyresHot'); break;
-    case 'puncture': toast('PUNCTURE', '#ff3b3b', 'limp to the pits'); say(['bono', 'sonotright'], { volume: 0.9, minGap: 3 }); radio('puncture'); break;
+    case 'tyresHot': toast('TYRE CLIFF', '#ffd400', 'grip falling away — box soon', 2); coach('cliff'); say(['bono'], { volume: 0.9, minGap: 20 }); radio('tyresHot'); break;
+    case 'puncture': toast('PUNCTURE', '#ff3b3b', 'limp to the pits', 2); say(['bono', 'sonotright'], { volume: 0.9, minGap: 3 }); radio('puncture'); break;
     case 'pitOpen':
       // "Box box" is a call, not a notice: only when the car actually needs the stop
       if (carNeedsStop()) say(['boxbox'], { volume: 0.8, minGap: 20 });
       else audio.blip(1046, 0.09, 'sine', 0.12);
       radio('pitOpen');
+      coach('pit');
       break;
     case 'pitIn': radio('pitIn'); break;
     case 'pitRequested': audio.blip(880, 0.08, 'square', 0.15); radio('pitRequested'); break;
@@ -339,9 +422,9 @@ function onWorldEvent(evt, payload = {}) {
       const c = COMPOUNDS[payload.compound];
       // what the stop cost against the field, in track and in places
       const cost = `−${Math.round(payload.lossMetres || 0)} m · ${payload.places ? `−${payload.places} place${payload.places > 1 ? 's' : ''}` : 'no places lost'}`;
-      if (payload.record) { audio.fanfare(); toast(`${payload.time.toFixed(2)}s RECORD STOP`, '#7df9ff', `${c.label} fitted · ${cost}`); radio('pitRecord'); }
-      else if (payload.clean) { audio.drs(); toast(`${payload.time.toFixed(2)}s`, '#2ecc71', `${c.label} fitted · ${cost}`); radio('pitOut'); }
-      else { toast(`${payload.time.toFixed(2)}s`, '#ff3b3b', `${payload.misses} wheel gun problem${payload.misses > 1 ? 's' : ''} · ${cost}`); radio('pitSlow'); }
+      if (payload.record) { audio.fanfare(); toast(`${payload.time.toFixed(2)}s RECORD STOP`, '#7df9ff', `${c.label} fitted · ${cost}`, 1); radio('pitRecord'); }
+      else if (payload.clean) { audio.drs(); toast(`${payload.time.toFixed(2)}s`, '#2ecc71', `${c.label} fitted · ${cost}`, 1); radio('pitOut'); }
+      else { toast(`${payload.time.toFixed(2)}s`, '#ff3b3b', `${payload.misses} wheel gun problem${payload.misses > 1 ? 's' : ''} · ${cost}`, 1); radio('pitSlow'); }
       break;
     }
     // the last two seconds of the window: a tick each half second (the chip and the bar blink with it)
@@ -350,7 +433,7 @@ function onWorldEvent(evt, payload = {}) {
       // the toast names the tyre for this shower: inters for a light one, wets for the real thing
       const c = COMPOUNDS[world.tyre.compound];
       const best = COMPOUNDS[payload.best || bestCompound(world.rainPeak)];
-      toast(payload.peak < 1 ? 'LIGHT RAIN' : 'HEAVY RAIN', '#7fb2ff', c.id === best.id ? `${c.label.toLowerCase()}s like it` : `on ${c.label.toLowerCase()}s — ${best.label.toLowerCase()}s are the call`);
+      toast(payload.peak < 1 ? 'LIGHT RAIN' : 'HEAVY RAIN', '#7fb2ff', c.id === best.id ? `${c.label.toLowerCase()}s like it` : `on ${c.label.toLowerCase()}s — ${best.label.toLowerCase()}s are the call`, 1);
       say(['isthatglock'], { volume: 0.9, minGap: 30 });
       radio('rainStart');
       break;
@@ -373,30 +456,31 @@ function onWorldEvent(evt, payload = {}) {
     case 'chequered':
       audio.fanfare();
       say([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 });
-      toast('CHEQUERED FLAG', '#fff', `${payload.venue} · P${payload.position} · ${payload.points ? `+${payload.points} pts` : 'no points'}`);
+      // no toast: the round card that slides in now leads with the flag, the place and the points
+      hud.flag = { venue: payload.venue, position: payload.position, points: payload.points };
       radio('chequered', { venue: payload.venue });
       break;
-    case 'venue': setTimeout(() => radio('venue', { venue: payload.venue.name }), 1800); break; // the renderer shows the round card
-    case 'night': setTimeout(() => radio('night'), 4500); break;
-    case 'scDeployed': audio.siren(); say(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking · lift to hold station'); radio('scDeployed'); break;
-    case 'scNeutral': audio.radioClick(); toast('RACE NEUTRALISED', '#ffd400', touch ? 'wiggle your thumb up and down to keep the tyres warm' : '▲▼ weave to keep the tyres warm'); radio('scNeutral'); break;
-    case 'scEnding': audio.scEnding(); toast('SC IN THIS LAP', '#ffd400', 'restart coming — overtakes pay double'); radio('scEnding'); break;
+    case 'venue': radioLater('venue', { venue: payload.venue.name }, 1800); break; // the renderer shows the round card
+    case 'night': radioLater('night', {}, 4500); break;
+    case 'scDeployed': audio.siren(); say(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking · lift to hold station', 2); radio('scDeployed'); coach('sc'); break;
+    case 'scNeutral': audio.radioClick(); toast('RACE NEUTRALISED', '#ffd400', touch ? 'wiggle your thumb up and down to keep the tyres warm' : '▲▼ weave to keep the tyres warm', 2); radio('scNeutral'); break;
+    case 'scEnding': audio.scEnding(); toast('SC IN THIS LAP', '#ffd400', 'restart coming — overtakes pay double', 2); radio('scEnding'); break;
     case 'scCount': audio.blip(payload.n === 1 ? 784 : 660, 0.1, 'square', 0.16); break;
     case 'weave': audio.blip(payload.zone === 'hot' ? 300 : 440 + payload.heat * 300, 0.04, 'triangle', 0.08); break;
-    case 'scJump': audio.overtake(); toast('JUMP', '#2ecc71', `+${SC_GAME.jumpBonus} on the restart`); radio('scJump'); break;
+    case 'scJump': audio.overtake(); toast('JUMP', '#2ecc71', `+${SC_GAME.jumpBonus} on the restart`, 1); radio('scJump'); break;
     case 'scRestart': {
       audio.drs();
       say(['leavemealone'], { volume: 0.9, minGap: 30 });
       const sub = payload.warm === null ? 'overtakes pay double' : payload.warm ? `tyres in the window · overtakes pay double` : 'tyres cold — careful · overtakes pay double';
-      toast('GREEN FLAG', payload.warm === false ? '#7df9ff' : '#2ecc71', sub);
+      toast('GREEN FLAG', payload.warm === false ? '#7df9ff' : '#2ecc71', sub, 1);
       radio(payload.warm === false ? 'scCold' : payload.warm ? 'scWarm' : payload.clean ? 'scClean' : 'scRestart');
       break;
     }
-    case 'penalty': audio.penalty(); audio.play('penalty', { volume: 0.9, minGap: 5 }); toast('5s PENALTY', '#ff3b3b', 'overtaking under safety car'); radio('penalty'); break;
+    case 'penalty': audio.penalty(); audio.play('penalty', { volume: 0.9, minGap: 5 }); toast('5s PENALTY', '#ff3b3b', 'overtaking under safety car', 2); radio('penalty'); break;
     case 'teammate': {
       audio.overtake();
       const v = say(['multi21', payload.driver?.clip?.overtake, 'itsjames'], { volume: 0.9, minGap: 6 });
-      toast('MULTI 21', '#e10600');
+      toast('MULTI 21', '#e10600', undefined, 1);
       if (!clipLine(v)) radio('teammate', { driver: payload.driver });
       break;
     }
@@ -430,6 +514,7 @@ boxBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropag
 boxBtn.addEventListener('click', (e) => e.preventDefault());
 /** Shows the on-screen BOX button while racing; lit only when the window is open. */
 let boxBtnKey = '';
+const keyHint = touch ? '' : ' · B'; // on a phone the button is the action
 function syncBoxButton() {
   const racing = state === 'playing' && !world.gameOver;
   const hidden = !racing || world.pit.inLane;
@@ -437,7 +522,7 @@ function syncBoxButton() {
   const label = !racing ? '' : world.pit.requested ? 'BOXING…' : world.pit.open ? 'BOX BOX' : 'BOX';
   const why = world.pit.reason;
   const sub = !racing ? '' : world.pit.open
-    ? (why === 'puncture' ? 'puncture — box now' : why === 'damage' ? 'repairs — box now' : why === 'sc' ? 'SC cheap stop · B' : `fit ${nc.label.toLowerCase()}s · ${Math.ceil(world.pit.left)}s · B`)
+    ? (why === 'puncture' ? 'puncture — box now' : why === 'damage' ? 'repairs — box now' : why === 'sc' ? `SC cheap stop${keyHint}` : `fit ${nc.label.toLowerCase()}s · ${Math.ceil(world.pit.left)}s${keyHint}`)
     : world.pit.cooldown > 0 ? 'fresh tyres — stay out' : `window in ${Math.ceil(world.pitCountdown())}s`;
   // this runs every frame: only touch the DOM when something actually changed
   const key = `${hidden}|${world.pit.open}|${world.pit.requested}|${label}|${sub}`;
@@ -489,7 +574,8 @@ function syncTouchPad() {
   if (!touch) return;
   const racing = state === 'playing' && !world.gameOver;
   touchPad.hidden = !racing;
-  steerHint.hidden = !(racing && !steered && world.racing && world.start.sinceGo < 8);
+  // not while the opening tip says the same thing
+  steerHint.hidden = !(racing && !steered && world.racing && world.start.sinceGo >= COACH.each && world.start.sinceGo < 8);
   const nc = COMPOUNDS[world.nextCompound];
   const empty = world.ers.charge < ERS.minToEngage;
   const key = `${nc.id}|${empty}`;
@@ -684,6 +770,7 @@ function frame(now) {
       }
     }
     if (hud.toast) hud.toast.age += dt;
+    updateCoach(dt);
     if (hud.damage) hud.damage.age += dt;
     if (hud.drs) hud.drs.age += dt;
     hud.musicOn = audio.musicOn;
@@ -712,4 +799,4 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && sta
 syncRotate();
 
 // Debug hook (used by the smoke test): window.raweCeek.world etc.
-window.raweCeek = { get world() { return world; }, get state() { return state; }, get car() { return car; }, startGame, pause, resume, selectCar };
+window.raweCeek = { get world() { return world; }, get state() { return state; }, get car() { return car; }, get hud() { return hud; }, startGame, pause, resume, selectCar };

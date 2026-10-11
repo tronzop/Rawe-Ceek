@@ -12,23 +12,53 @@ const MONO = '"Cascadia Mono", Consolas, "Roboto Mono", monospace';
 const DAMAGE_CARD = { w: 176, h: 58 };
 /** Seconds of a bouncing tyre's path drawn ahead of it (drawTyrePath). */
 const TYRE_PATH = 0.6;
-/** Tutorial tips shown one at a time after the lights, `each` seconds apiece. `[KEY]` draws a keycap. */
-const COACH = {
+/**
+ * Tutorial: the grid card, then one tip for `each` seconds after the lights. `[KEY]` draws a keycap.
+ * Everything else is taught just in time by the COACH_CARDS, once per browser.
+ */
+export const COACH = {
   each: 3.2,
-  tips: [
-    '[▲] [▼] steer · [▶] push · [◀] lift and save the tyres',
-    '[SPACE] ERS boost · sit right behind a rival for the tow',
-    '[B] box when the window opens · [1]–[5] pick the next tyre',
-  ],
-  // the same lessons for a thumb on the touch pad
-  touchTips: [
-    'Drag on the track to steer · hold [PUSH] to go faster · [LIFT] saves the tyres',
-    'Hold [ERS] to boost · sit right behind a rival for the tow',
-    'Tap [BOX] when it turns green · [TYRE] picks the next compound',
-  ],
+  tips: ['[▲] [▼] steer · [▶] push · [◀] lift and save the tyres'],
+  // the same lesson for a thumb on the touch pad
+  touchTips: ['Drag on the track to steer · hold [PUSH] to go faster · [LIFT] saves the tyres'],
   grid: ['Hold for the lights · [▶] or [SPACE] the instant they go out for a GREAT START', 'A touch in the pack costs bodywork, not the race'],
   touchGrid: ['Hold for the lights · tap [PUSH] or [ERS] the instant they go out for a GREAT START', 'A touch in the pack costs bodywork, not the race'],
 };
+
+/**
+ * Just-in-time coach cards (B11): each shows once per browser, the first time the moment it explains
+ * happens, pointing at the HUD widget it is about. `at` names the anchor drawHud records.
+ */
+export const COACH_CARDS = {
+  pit: { at: 'pitChip', accent: '#2ecc71', keys: '[B] box now · the green chip counts the window down', touch: 'Tap [BOX] now · the green chip counts the window down' },
+  tow: { at: 'ers', accent: '#7df9ff', keys: 'In the tow: free speed and the battery charges · [SPACE] spends it', touch: 'In the tow: free speed and the battery charges · hold [ERS] to spend it' },
+  cliff: { at: 'tyre', accent: '#ffd400', keys: 'Tyres over the cliff: grip is going · box at the next window', touch: 'Tyres over the cliff: grip is going · box at the next window' },
+  contact: { at: 'damage', accent: '#ff3b3b', keys: 'A part at 100% means the next hit retires you · the pit crew fixes it', touch: 'A part at 100% means the next hit retires you · the pit crew fixes it' },
+  rain: { at: 'nextTyre', accent: '#7fb2ff', keys: 'Slicks in the wet: no grip · [1]–[5] pick inters or wets, then box', touch: 'Slicks in the wet: no grip · [TYRE] picks inters or wets, then box' },
+  sc: { at: 'banner', accent: '#ffd400', keys: 'Safety car: no overtaking · [◀] lift and drop back behind the pack', touch: 'Safety car: no overtaking · hold [LIFT] and drop back behind the pack' },
+};
+/** Seconds a coach card stays up. */
+export const COACH_CARD_DUR = 5;
+
+/**
+ * HUD scale for phones (B10): on touch, or any window under 500 CSS px tall, the HUD grows until its
+ * smallest `minPx` text renders at 10 CSS px (the world is drawn at cssH/720 of a logical px),
+ * capped at 1.8. `override` (?hudscale=) wins when given.
+ */
+export function hudScale(cssH, { touch = false, override = null, minPx = 11, logicalHeight = 720 } = {}) {
+  if (override > 0) return Math.max(1, override * 11 / minPx);
+  if (!touch && cssH >= 500) return 1;
+  return Math.max(1, Math.min(1.8, 10.1 / (minPx * cssH / logicalHeight)));
+}
+
+/**
+ * Toast priority (A15): returns the toast that should be on screen when `next` is offered while
+ * `cur` is up. A lower priority never replaces a live higher one; equal or higher takes over.
+ */
+export function offerToast(cur, next) {
+  if (cur && cur.age < cur.dur && (cur.prio || 0) > (next.prio || 0)) return cur;
+  return next;
+}
 
 /** Deterministic 0..1 noise from an integer seed (for scenery that must not flicker). */
 const hash = (n) => {
@@ -47,6 +77,13 @@ export class Renderer {
     this.zoom = 1;
     this.debugHitbox = false; // ?hitbox=1: stroke every hit part (main sets it)
     this.vis = { x0: 0, x1: 1280, y0: 0, y1: 720 }; // the world rect on screen this frame (wider than the view while zoomed out)
+    // phone-readable HUD (see fit): ui scales the corner cards, k is the scale of the panel being drawn
+    this.ui = 1;
+    this.k = 1;
+    this.cssPerUnit = 1; // CSS px per logical px
+    this.hudOverride = null; // ?hudscale= (main sets it)
+    this.padReserve = 0; // CSS px of touch pad along the bottom centre (main sets it on touch); the bottom cards stay clear
+    this.anchors = {}; // HUD widget rects (screen-logical) recorded by drawHud, for the coach cards' pointers
     // pre-render the kerb strip as a pattern-ish tile for cheapness
     this.kerb = document.createElement('canvas');
     this.kerb.width = 64;
@@ -65,7 +102,30 @@ export class Renderer {
     this.canvas.height = Math.round(cssH * dpr);
     const scale = (cssH * dpr) / logicalHeight;
     this.view = { width: (cssW * dpr) / scale, height: logicalHeight, scale };
+    this.cssH = cssH;
+    this.cssPerUnit = cssH / logicalHeight || 1;
+    this.ui = hudScale(cssH, { touch: this.touch, override: this.hudOverride, logicalHeight });
     return this.view;
+  }
+  /** HUD scale for a panel whose smallest text is `minPx` (13 px text needs less growth than 11 px). */
+  uiFor(minPx) {
+    return hudScale(this.cssH || 720, { touch: this.touch, override: this.hudOverride, minPx, logicalHeight: this.view.height });
+  }
+  /** A font size no smaller than 10 CSS px at the current panel scale `this.k`. */
+  px(n) {
+    return Math.max(n, Math.ceil(10 / (this.cssPerUnit * this.k)));
+  }
+  /** Scales what follows by k about the screen point (ax, ay): existing absolute coordinates keep working. */
+  scaleAbout(ax, ay, k) {
+    this.k = k;
+    if (k === 1) return;
+    this.ctx.translate(ax, ay);
+    this.ctx.scale(k, k);
+    this.ctx.translate(-ax, -ay);
+  }
+  /** Records a HUD widget's on-screen rect for the coach cards: local rect (x, y, w, h) under scale k about (ax, ay). */
+  anchor(name, x, y, w, h, ax, ay, k) {
+    this.anchors[name] = { x: ax + (x - ax) * k, y: ay + (y - ay) * k, w: w * k, h: h * k };
   }
 
   /** Blend a venue palette key between the previous and current venue. */
@@ -75,11 +135,36 @@ export class Renderer {
     return lerpColor(a, b, world.venueBlend);
   }
 
+  /**
+   * Where the HUD goes this frame (B10). Every corner card is drawn under scale(k) about its corner;
+   * on a phone they grow (this.ui) but never past what fits: the score + damage stack stays above the
+   * track, the bottom cards stay clear of the touch pad. Toasts and the round card live in the band
+   * between the top cards and the track (over the pit lane), never over the racing lanes.
+   */
+  hudLayout(world, W, H) {
+    const pad = 18;
+    const ui = this.ui;
+    const kTop = Math.max(0.6, Math.min(ui, (world.trackTop - 4 - pad) / (64 + 8 + DAMAGE_CARD.h)));
+    const freeW = this.padReserve > 0 ? ((this.canvas.clientWidth || 0) - this.padReserve) / 2 / this.cssPerUnit - pad - 6 : Infinity;
+    const kBot = Math.max(0.6, Math.min(ui, freeW / 250));
+    const kR = this.uiFor(13);
+    // radio strip: in the gap between the top cards; under them when the gap is too small
+    const gap = (W - pad - 250 * kTop) - (pad + 300 * kTop) - 24;
+    const narrow = gap < 380 * kR;
+    const radioMaxW = (narrow ? W - pad * 2 - 2 * (DAMAGE_CARD.w * kTop + 10) : Math.min(gap, 620 * kR)) / kR;
+    const radioY = narrow ? pad + 64 * kTop + 10 : pad + 6;
+    const bannerY = radioY + 68 * kR; // SC / penalty banners and toasts stack under the strip's tallest form
+    this.L = { pad, ui, kTop, kBot, kR, gap, narrow, radioMaxW, radioY, bannerY };
+    return this.L;
+  }
+
   render(world, hud, dt) {
     this.time += dt;
     this.dt = dt;
     const { ctx } = this;
     const { width: W, height: H, scale } = this.view;
+    this.hudLayout(world, W, H);
+    this.anchors = {};
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     // camera shake
     if (world.shake > 0) {
@@ -144,7 +229,7 @@ export class Renderer {
       ctx.fillStyle = `rgba(255,255,255,${0.75 * world.flash})`;
       ctx.fillRect(0, 0, W, H);
     }
-    this.drawVenueCard(world, W, H);
+    this.drawVenueCard(world, W, H, hud);
     this.drawLights(world, W);
     if (hud) this.drawHud(world, hud, W, H);
   }
@@ -197,6 +282,8 @@ export class Renderer {
     const a = sinceGo < 0 ? 1 : clamp(1 - (sinceGo - 1.5), 0, 1);
     const cx = W / 2, cy = world.pitTop + (world.pitBottom - world.pitTop) / 2;
     const gap = 34;
+    ctx.save();
+    this.scaleAbout(cx, cy, this.uiFor(12)); // readable on a phone
     ctx.globalAlpha = a;
     ctx.fillStyle = '#0b0d12';
     roundRect(ctx, cx - gap * 2.5 - 14, cy - 22, gap * 5 + 28, 44, 8);
@@ -220,7 +307,8 @@ export class Renderer {
       ctx.fillText('FORMATION', cx, cy + 40);
       ctx.textAlign = 'left';
     }
-    ctx.globalAlpha = 1;
+    ctx.restore();
+    this.k = 1;
   }
 
   // ---------- scenery ----------
@@ -617,18 +705,33 @@ export class Renderer {
     }
   }
 
-  /** Round card: slides in from the right during the venue morph — flag, round number, name — with chequered edges. */
-  drawVenueCard(world, W, H) {
+  /**
+   * Round card: slides in from the right during the venue morph — the flag you just took, round
+   * number, name — with chequered edges. It sits in the band above the track (with the toasts),
+   * bottom edge just over the kerb, so it never covers the racing lanes.
+   */
+  drawVenueCard(world, W, H, hud) {
     const b = world.venueBlend;
     if (b >= 1 || world.gps === 0) return;
     const { ctx } = this;
+    const k = this.uiFor(13);
+    const L = this.L;
     const inT = easeOut(clamp01(b / 0.22)); // slide in
     const outT = easeInOut(clamp01((b - 0.72) / 0.28)); // slide out to the left
-    const cw = Math.min(W * 0.72, 640), ch = 92;
-    const cx = W / 2 + (1 - inT) * (W * 0.6 + cw) - outT * (W * 0.6 + cw);
-    const cy = H * 0.3;
+    const flag = hud && hud.flag;
+    // between the top cards when they leave room, else as wide as it needs
+    const room = L ? L.gap / k : 640;
+    const cw = clamp(room, 380, Math.min(640, (W * 0.9) / k));
+    // a phone has no room under the radio strip for the tall card: one row instead (name left, lines right)
+    const fullH = flag ? 108 : 92;
+    const compact = L && fullH * k > world.trackTop - 14 - (L.radioY + 60 * L.kR);
+    const ch = compact ? 64 : fullH;
+    const cx = W / 2 + (1 - inT) * (W * 0.6 + cw * k) - outT * (W * 0.6 + cw * k);
+    const cy = world.trackTop - 14 - (ch / 2) * k;
     ctx.save();
     ctx.translate(cx, cy);
+    ctx.scale(k, k);
+    this.k = k;
     ctx.fillStyle = 'rgba(8,10,16,0.88)';
     roundRect(ctx, -cw / 2, -ch / 2, cw, ch, 12); ctx.fill();
     // chequered end caps
@@ -638,12 +741,37 @@ export class Renderer {
     }
     ctx.fillStyle = world.venue.barrier; ctx.fillRect(-cw / 2 + 30, ch / 2 - 8, cw - 60, 4);
     ctx.fillStyle = '#ffd400'; ctx.fillRect(-cw / 2 + 30, ch / 2 - 8, (cw - 60) * clamp01(b / 0.72), 4);
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#c9ced9'; ctx.font = `bold 12px ${FONT}`;
-    ctx.fillText(`ROUND ${world.gps + 1}  ·  ${world.venue.night ? 'NIGHT RACE' : world.venue.rainBias > 1.5 ? 'RAIN LIKELY' : 'GRAND PRIX'}`, 0, -ch / 2 + 22);
-    ctx.fillStyle = '#fff'; ctx.font = `900 34px ${FONT}`;
-    ctx.fillText(`${world.venue.flag}  ${world.venue.name.toUpperCase()}`, 0, 12);
+    ctx.textBaseline = 'middle';
+    const roundLine = `ROUND ${world.gps + 1}  ·  ${world.venue.night ? 'NIGHT RACE' : world.venue.rainBias > 1.5 ? 'RAIN LIKELY' : 'GRAND PRIX'}`;
+    // the flag you just took: where you finished and what it paid (the chequered toast used to say this over the card)
+    const flagLine = flag ? `🏁 ${flag.venue.toUpperCase()} · P${flag.position} · ${flag.points ? `+${flag.points} PTS` : 'NO POINTS'}` : null;
+    if (compact) {
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#fff'; ctx.font = `900 28px ${FONT}`;
+      ctx.fillText(`${world.venue.flag} ${world.venue.name.toUpperCase()}`, -cw / 2 + 58, -2);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#c9ced9'; ctx.font = `bold ${this.px(13)}px ${FONT}`;
+      ctx.fillText(roundLine, cw / 2 - 58, flagLine ? 8 : -2);
+      if (flagLine) {
+        ctx.fillStyle = flag.points ? '#ffd400' : '#c9ced9'; ctx.font = `900 ${this.px(13)}px ${FONT}`;
+        ctx.fillText(flagLine, cw / 2 - 58, -12);
+      }
+    } else {
+      ctx.textAlign = 'center';
+      let y = -ch / 2 + 22;
+      if (flagLine) {
+        ctx.fillStyle = flag.points ? '#ffd400' : '#c9ced9'; ctx.font = `900 ${this.px(13)}px ${FONT}`;
+        ctx.fillText(flagLine, 0, y);
+        y += 18;
+      }
+      ctx.fillStyle = '#c9ced9'; ctx.font = `bold ${this.px(13)}px ${FONT}`;
+      ctx.fillText(roundLine, 0, y);
+      ctx.fillStyle = '#fff'; ctx.font = `900 34px ${FONT}`;
+      ctx.fillText(`${world.venue.flag}  ${world.venue.name.toUpperCase()}`, 0, ch / 2 - 34);
+    }
+    ctx.textBaseline = 'alphabetic';
     ctx.restore();
+    this.k = 1;
   }
 
   drawPitLane(world, W) {
@@ -684,7 +812,7 @@ export class Renderer {
     ctx.font = `bold ${Math.max(8, wallH - 6)}px ${FONT}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const words = [world.venue.name.toUpperCase(), 'RAWE CEEK', 'PIRELLI', 'DHL'];
+    const words = [world.venue.name.toUpperCase(), 'RAWE CEEK', 'BOX BOX', 'TYRE MANAGEMENT'];
     for (let i = -1; i < 6; i++) {
       const x = i * 480 - (world.scroll % 480);
       ctx.fillText(words[((i + Math.floor(world.scroll / 480)) % 4 + 4) % 4], x + 20, wallTop + wallH / 2 + 1);
@@ -696,9 +824,10 @@ export class Renderer {
       ctx.fillStyle = `rgba(46,204,113,${0.35 + glow * 0.45})`;
       ctx.fillRect(px - 140, wallTop, 280, wallH);
       ctx.fillStyle = '#fff';
-      ctx.font = `bold 13px ${FONT}`;
+      const fs = Math.min(wallH - 2, Math.max(13, Math.ceil(10 / this.cssPerUnit))); // readable on a phone, inside the wall
+      ctx.font = `bold ${fs}px ${FONT}`;
       ctx.textAlign = 'center';
-      ctx.fillText('▲ PIT ENTRY ▲', px, wallTop + wallH / 2 + 5);
+      ctx.fillText('▲ PIT ENTRY ▲', px, wallTop + wallH / 2 + fs * 0.38);
       // the window draining away, along the bottom of the glow
       if (world.pit.reason === 'window') {
         const f = clamp(world.pit.left / PIT.openFor, 0, 1);
@@ -801,7 +930,7 @@ export class Renderer {
     ctx.fillStyle = '#b9a77a';
     ctx.fillRect(0, top, W, 10);
     // ad boards
-    const boards = ['RAWE CEEK', 'PIRELLI', 'BOX BOX', 'PLAN C', 'WE ARE CHECKING', 'DRS', 'SO NOT RIGHT', 'PUSHING', world.venue.name.toUpperCase(), 'MULTI 21'];
+    const boards = ['RAWE CEEK', 'GRAINING', 'BOX BOX', 'PLAN C', 'WE ARE CHECKING', 'DRS', 'SO NOT RIGHT', 'PUSHING', world.venue.name.toUpperCase(), 'MULTI 21'];
     const bw = 330;
     const off = (world.scroll * 0.9) % (bw * boards.length);
     const by = top + 24;
@@ -1043,7 +1172,7 @@ export class Renderer {
         ctx.lineWidth = 1.5;
         ctx.stroke();
         if (hz.big || hz.type === 'stranded') {
-          ctx.font = `900 10px ${FONT}`;
+          ctx.font = `900 ${Math.max(10 * this.ui, Math.ceil(10 / this.cssPerUnit))}px ${FONT}`;
           ctx.textAlign = 'right';
           ctx.fillStyle = color;
           ctx.fillText(hz.big ? 'BIG' : 'STOPPED', x - 4, y + 4);
@@ -1092,13 +1221,14 @@ export class Renderer {
   drawLetterbox(world, W, H) {
     const { ctx } = this;
     const a = world.cine;
-    const bar = 44 * a;
+    const k = this.uiFor(12); // bars and captions grow on a phone
+    const bar = 44 * a * k;
     ctx.fillStyle = '#04060e';
     ctx.fillRect(0, 0, W, bar);
     ctx.fillRect(0, H - bar, W, bar);
     ctx.globalAlpha = a;
     ctx.fillStyle = '#ffd400';
-    ctx.font = `900 ${18 + 6 * a}px ${FONT}`;
+    ctx.font = `900 ${(18 + 6 * a) * k}px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const exiting = world.pit.phase === 'merge';
@@ -1109,7 +1239,7 @@ export class Renderer {
       const pos = `REJOINED ${positionLabel(world.position)} (${lost ? `−${lost}` : '±0'})`;
       const big = ctx.font;
       const gw = ctx.measureText(go).width;
-      ctx.font = `900 ${12 + 4 * a}px ${FONT}`;
+      ctx.font = `900 ${(12 + 4 * a) * k}px ${FONT}`;
       const pw = ctx.measureText(pos).width;
       ctx.textAlign = 'left';
       ctx.fillStyle = lost ? '#ff8a00' : '#2ecc71';
@@ -1120,7 +1250,7 @@ export class Renderer {
       ctx.textAlign = 'center';
     } else ctx.fillText('BOX BOX', W / 2, H - bar / 2);
     ctx.fillStyle = '#c9ced9';
-    ctx.font = `bold 12px ${FONT}`;
+    ctx.font = `bold ${12 * k}px ${FONT}`;
     ctx.fillText(exiting ? `${COMPOUNDS[world.tyre.compound].label} fitted · rejoining, tyres cold` : `${COMPOUNDS[world.nextCompound].label} · get ready on the wheel gun`, W / 2, bar / 2);
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
@@ -1163,6 +1293,8 @@ export class Renderer {
     const W = 340, H = 96;
     const x = p.x - W / 2;
     const y = p.y + 46; // below the car, over the empty top of the track
+    ctx.save();
+    this.scaleAbout(p.x, y, this.ui);
     ctx.fillStyle = 'rgba(8,10,16,0.88)';
     roundRect(ctx, x, y, W, H, 10);
     ctx.fill();
@@ -1186,7 +1318,7 @@ export class Renderer {
       ctx.font = `bold 12px ${FONT}`;
       ctx.textAlign = 'center';
       ctx.fillText(res === 'miss' ? '✕' : res === 'perfect' ? '★' : w, cx + 19, y + 28);
-      if (g.jammed[i] && !res) { ctx.fillStyle = '#ff8a00'; ctx.font = `bold 9px ${FONT}`; ctx.fillText('JAM', cx + 19, y + 44); }
+      if (g.jammed[i] && !res) { ctx.fillStyle = '#ff8a00'; ctx.font = `bold ${this.px(10)}px ${FONT}`; ctx.fillText('JAM', cx + 19, y + 10); }
     });
     // sweep bar
     const bx = x + 14, by = y + 60, bw = W - 28, bh = 16;
@@ -1217,6 +1349,8 @@ export class Renderer {
       ctx.fillText(g.hold > 0 ? 'JACK DOWN — GO GO GO' : '', x + W / 2, by + 12);
     }
     ctx.textAlign = 'left';
+    ctx.restore();
+    this.k = 1;
   }
 
   /** Yellow-flag marshals along the pit wall while the safety car is out. */
@@ -1358,7 +1492,7 @@ export class Renderer {
     ctx.textAlign = 'center';
     for (const pp of world.popups) {
       const a = clamp(1 - pp.age / pp.life, 0, 1);
-      const size = pp.value ? 16 + Math.min(14, pp.value / 10) : 18;
+      const size = (pp.value ? 16 + Math.min(14, pp.value / 10) : 18) * this.uiFor(16);
       const pop = 1 + 0.35 * Math.max(0, 1 - pp.age / 0.15) * Math.sin(Math.min(1, pp.age / 0.15) * Math.PI);
       const text = pp.value ? `+${pp.value} ${pp.text}` : pp.text;
       ctx.globalAlpha = a;
@@ -1505,7 +1639,7 @@ export class Renderer {
         }
         if (hz.teammate || hz.driver?.legend) {
           ctx.fillStyle = hz.driver?.legend ? '#d4af37' : '#fff';
-          ctx.font = `bold 11px ${FONT}`;
+          ctx.font = `bold ${Math.max(11, Math.ceil(10 / this.cssPerUnit))}px ${FONT}`; // readable on a phone
           ctx.textAlign = 'center';
           ctx.fillText(hz.teammate ? `TEAM-MATE · ${hz.driver.short}` : `${hz.driver.name.toUpperCase()} · ${hz.team.classic}`, 0, -hz.h * 0.75);
         }
@@ -1714,8 +1848,12 @@ export class Renderer {
   // ---------- HUD ----------
   drawHud(world, hud, W, H) {
     const { ctx } = this;
-    const pad = 18;
+    const L = this.L || this.hudLayout(world, W, H);
+    const { pad, kTop, kBot } = L;
+    const touch = this.touch;
     // speedo (bottom-left): km/h, the gear you can hear, rev bars that saw with the engine, ERS
+    ctx.save();
+    this.scaleAbout(pad, H - pad, kBot);
     const kmh = world.kmh;
     const ratio = clamp(world.speed / SPEED.max, 0, 1);
     const eng = engineState(ratio);
@@ -1729,7 +1867,7 @@ export class Renderer {
     ctx.fillStyle = '#fff';
     ctx.font = `bold 46px ${MONO}`;
     ctx.fillText(String(kmh).padStart(3, ' '), pad + 14, H - 66);
-    ctx.font = `14px ${FONT}`;
+    ctx.font = `${this.px(14)}px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
     ctx.fillText('km/h', pad + 108, H - 66);
     // gear: flashes red at the redline, right before the upshift you hear
@@ -1737,7 +1875,7 @@ export class Renderer {
     ctx.font = `bold 40px ${MONO}`;
     ctx.fillStyle = redline && Math.sin(this.time * 40) > 0 ? '#ff3b3b' : '#ffd400';
     ctx.fillText(stopped || world.gameOver ? 'N' : String(eng.gear), pad + 236, H - 66);
-    ctx.font = `bold 10px ${FONT}`;
+    ctx.font = `bold ${this.px(10)}px ${FONT}`;
     ctx.fillStyle = '#8a91a0';
     ctx.fillText('GEAR', pad + 236, H - 100);
     // status chip on the card's top edge: whatever is capping or boosting the speed right now
@@ -1761,30 +1899,37 @@ export class Renderer {
     // ERS: the label says what the battery is doing (the whine you hear while boosting)
     const ersLow = world.ers.charge <= ERS.minToEngage && !world.ers.boosting;
     ctx.fillStyle = world.ers.boosting ? '#7df9ff' : ersLow ? '#ff8a00' : '#c9ced9';
-    ctx.font = `bold 11px ${FONT}`;
-    ctx.fillText(world.ers.boosting ? 'BOOST' : ersLow ? 'ERS LOW' : 'ERS', pad + 14, H - 28);
+    ctx.font = `bold ${this.px(11)}px ${FONT}`;
+    const ersLabel = world.ers.boosting ? 'BOOST' : ersLow ? 'ERS LOW' : 'ERS';
+    ctx.fillText(ersLabel, pad + 14, H - 28);
+    // the bar starts after the label (which grows on a phone)
+    const ex = Math.max(pad + 66, pad + 14 + ctx.measureText(ersLabel).width + 8), ew = pad + 234 - ex;
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
-    ctx.fillRect(pad + 66, H - 37, 168, 10);
+    ctx.fillRect(ex, H - 37, ew, 10);
     ctx.fillStyle = world.ers.boosting ? '#7df9ff' : world.ers.charge > ERS.minToEngage ? '#2ee6a6' : '#666';
-    ctx.fillRect(pad + 66, H - 37, 168 * (world.ers.charge / ERS.max), 10);
+    ctx.fillRect(ex, H - 37, ew * (world.ers.charge / ERS.max), 10);
+    this.anchor('ers', pad, H - 118, 250, 100, pad, H - pad, kBot);
     // a DRS gate: the bar flashes cyan and says what the battery actually got
     if (hud.drs && hud.drs.age < 1.2) {
       const f = 1 - hud.drs.age / 1.2;
       ctx.strokeStyle = `rgba(125,249,255,${f})`;
       ctx.lineWidth = 2;
-      ctx.strokeRect(pad + 65, H - 38, 170, 12);
+      ctx.strokeRect(ex - 1, H - 38, ew + 2, 12);
       ctx.fillStyle = `rgba(125,249,255,${0.35 * f * (Math.sin(this.time * 30) > 0 ? 1 : 0.4)})`;
-      ctx.fillRect(pad + 66, H - 37, 168, 10);
+      ctx.fillRect(ex, H - 37, ew, 10);
       ctx.globalAlpha = Math.min(1, f * 1.5);
-      ctx.font = `900 12px ${FONT}`;
+      ctx.font = `900 ${this.px(12)}px ${FONT}`;
       ctx.fillStyle = '#7df9ff';
       ctx.textAlign = 'right';
       ctx.fillText(`DRS +${hud.drs.gain}`, pad + 234, H - 42);
       ctx.textAlign = 'left';
       ctx.globalAlpha = 1;
     }
+    ctx.restore();
 
     // tyre widget (bottom-right)
+    ctx.save();
+    this.scaleAbout(W - pad, H - pad, kBot);
     const tw = 250;
     const tx = W - pad - tw;
     ctx.fillStyle = 'rgba(8,10,16,0.82)';
@@ -1833,32 +1978,37 @@ export class Renderer {
       ctx.fillRect(fx - 1, H - 80, 2, 14);
     }
     ctx.fillStyle = '#c9ced9';
-    ctx.font = `12px ${FONT}`;
+    ctx.font = `${this.px(12)}px ${FONT}`;
     ctx.fillText(`grip ${Math.round(world.grip * 100)}%`, tx + 80, H - 58);
     if (fc) {
       ctx.textAlign = 'right';
-      ctx.font = `bold 11px ${FONT}`;
+      ctx.font = `bold ${this.px(11)}px ${FONT}`;
       ctx.fillStyle = FC_COLOR[fc.verdict];
       ctx.fillText(FORECAST_LABEL[fc.verdict], tx + 230, H - 58);
       ctx.textAlign = 'left';
     }
     const nc = COMPOUNDS[world.nextCompound];
     ctx.fillStyle = '#c9ced9';
-    ctx.font = `12px ${FONT}`;
+    ctx.font = `${this.px(12)}px ${FONT}`;
     ctx.fillText('Next stop:', tx + 80, H - 36);
+    const nx = Math.max(tx + 150, tx + 80 + ctx.measureText('Next stop:').width + 6);
     ctx.fillStyle = nc.color;
-    ctx.font = `bold 12px ${FONT}`;
-    ctx.fillText(nc.label, tx + 150, H - 36);
+    ctx.font = `bold ${this.px(12)}px ${FONT}`;
+    ctx.fillText(nc.label, nx, H - 36);
+    this.anchor('nextTyre', tx + 76, H - 50, 160, 20, W - pad, H - pad, kBot);
     // a red ✕ when the planned tyre is wrong for the weather that is coming
     if (wrongForWeather(nc.id, world.expectedRain)) {
-      const xx = tx + 150 + ctx.measureText(nc.label).width + 8;
+      const xx = nx + ctx.measureText(nc.label).width + 8;
       ctx.strokeStyle = '#ff3b3b';
       ctx.lineWidth = 2.5;
       ctx.beginPath(); ctx.moveTo(xx, H - 45); ctx.lineTo(xx + 9, H - 36); ctx.moveTo(xx + 9, H - 45); ctx.lineTo(xx, H - 36); ctx.stroke();
     }
-    ctx.fillStyle = '#8a91a0';
-    ctx.font = `11px ${FONT}`;
-    ctx.fillText('[1-5 / Tab]', tx + 80, H - 22);
+    if (!touch) {
+      ctx.fillStyle = '#8a91a0';
+      ctx.font = `${this.px(11)}px ${FONT}`;
+      ctx.fillText('[1-5 / Tab]', tx + 80, H - 22);
+    }
+    this.anchor('tyre', tx, H - 118, tw, 100, W - pad, H - pad, kBot);
     // pit status: a chip on the card's edge (it used to float over the grass), urgent when the car needs the stop
     const pitIn = world.pitCountdown();
     const needsStop = world.tyre.punctured || cliff || world.damage >= DAMAGE.needsStop
@@ -1876,6 +2026,7 @@ export class Renderer {
     } else if (pit.cooldown > 0) pitChip = ['fresh tyres — stay out', 'rgba(52,56,66,0.96)', '#c9ced9'];
     else pitChip = [`${needsStop ? 'BOX in' : 'pit window in'} ${Math.ceil(pitIn)}s`, needsStop ? 'rgba(255,212,0,0.92)' : 'rgba(52,56,66,0.96)', needsStop ? '#111' : '#c9ced9'];
     const chipW = this.drawChip(pitChip[0], tx + tw - 12, H - 118, pitChip[1], pitChip[2], 'right');
+    this.anchor('pitChip', tx + tw - 12 - chipW, H - 129, chipW, 22, W - pad, H - pad, kBot);
     // the window draining away: a green bar under the chip (blinking white in the last two seconds)
     if (!pit.inLane && pit.reason === 'window') {
       const f = clamp(pit.left / PIT.openFor, 0, 1);
@@ -1884,8 +2035,11 @@ export class Renderer {
       ctx.fillStyle = pit.left <= 2 && blink ? '#fff' : '#2ecc71';
       ctx.fillRect(tx + tw - 12 - chipW + 8, H - 105, (chipW - 16) * f, 3);
     }
+    ctx.restore();
 
     // top strip: score, distance, time, overtakes, weather
+    ctx.save();
+    this.scaleAbout(pad, pad, kTop);
     ctx.textAlign = 'left';
     ctx.fillStyle = 'rgba(8,10,16,0.82)';
     roundRect(ctx, pad, pad, 300, 64, 10);
@@ -1903,19 +2057,23 @@ export class Renderer {
     ctx.font = `bold 30px ${MONO}`;
     ctx.fillText(String(shown).padStart(6, '0'), pad + 14, pad + 36);
     this.drawFlow(world, pad + 132, pad + 10);
-    ctx.font = `12px ${FONT}`;
+    // on touch the card keeps what matters at a glance: no best, no close-call tally
+    ctx.font = `${this.px(12)}px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
-    ctx.fillText(`${formatDistance(world.distance)}   ·   ${formatTime(world.elapsed)}   ·   best ${hud.best}`, pad + 14, pad + 54);
+    ctx.fillText(`${formatDistance(world.distance)}   ·   ${formatTime(world.elapsed)}${touch ? '' : `   ·   best ${hud.best}`}`, pad + 14, pad + 54);
     ctx.textAlign = 'right';
     ctx.fillStyle = '#fff';
     ctx.font = `bold 16px ${FONT}`;
     ctx.fillText(positionLabel(world.position), pad + 286, pad + 26);
-    ctx.font = `11px ${FONT}`;
+    ctx.font = `${this.px(11)}px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
-    ctx.fillText(`${world.overtakes} overtakes`, pad + 286, pad + 42);
-    ctx.fillText(`${world.closeCalls} close calls`, pad + 286, pad + 56);
+    ctx.fillText(`${world.overtakes} overtakes`, pad + 286, touch ? pad + 50 : pad + 42);
+    if (!touch) ctx.fillText(`${world.closeCalls} close calls`, pad + 286, pad + 56);
+    ctx.restore();
 
     // venue + GP progress + weather (top right)
+    ctx.save();
+    this.scaleAbout(W - pad, pad, kTop);
     const vw = 250;
     const vx = W - pad - vw;
     ctx.fillStyle = 'rgba(8,10,16,0.82)';
@@ -1925,13 +2083,13 @@ export class Renderer {
     ctx.fillStyle = '#fff';
     ctx.font = `bold 15px ${FONT}`;
     ctx.fillText(`${world.venue.flag} ${world.venue.name}`, vx + 12, pad + 24);
-    ctx.font = `11px ${FONT}`;
+    ctx.font = `${this.px(11)}px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
     // live: what the current position would pay at the flag
     const roundTxt = `Round ${world.gps + 1}  ·  `;
     ctx.fillText(roundTxt, vx + 12, pad + 40);
     const pts = pointsFor(world.position);
-    ctx.font = `bold 11px ${FONT}`;
+    ctx.font = `bold ${this.px(11)}px ${FONT}`;
     ctx.fillStyle = pts > 0 ? '#ffd400' : '#8a91a0';
     ctx.fillText(`${positionLabel(world.position)} → ${pts} pts`, vx + 12 + ctx.measureText(roundTxt).width, pad + 40);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
@@ -1953,20 +2111,21 @@ export class Renderer {
       ctx.fillStyle = world.raining ? '#7fb2ff' : '#ffd400';
       ctx.fillText(world.raining ? (world.rainPeak < 1 ? '🌦 DAMP' : '🌧 RAIN') : world.rain > 0.1 ? '☁ DRYING' : world.night > 0.5 ? '🌙 NIGHT' : '☀ DRY', vx + vw - 12, pad + 24);
     }
-    ctx.fillStyle = hud.musicOn ? '#c9ced9' : '#666';
-    ctx.font = `11px ${FONT}`;
-    ctx.fillText(hud.musicOn ? '♪ on (M)' : '♪ off (M)', vx + vw - 12, pad + 40);
+    // the music key is a keyboard thing
+    if (!touch) {
+      ctx.fillStyle = hud.musicOn ? '#c9ced9' : '#666';
+      ctx.font = `${this.px(11)}px ${FONT}`;
+      ctx.fillText(hud.musicOn ? '♪ on (M)' : '♪ off (M)', vx + vw - 12, pad + 40);
+    }
+    ctx.restore();
 
     // Radio strip. Wide screens: in the gap between the two top cards. Narrow ones (near-square
-    // windows, phones): under the cards, so it never covers the score or the venue. Long lines
-    // wrap instead of running off; a subtitled clip names who is talking.
-    const gap = (W - pad - 250) - (pad + 300) - 24;
-    const narrow = gap < 380;
-    // narrow: under the cards, but clear of the damage card that hangs below the score (see drawDamage)
-    const radioMaxW = narrow ? W - pad * 2 - 2 * (DAMAGE_CARD.w + 10) : Math.min(gap, 620);
-    const radioY = narrow ? pad + 64 + 10 : pad + 6;
-    const bannerY = radioY + 68; // SC / penalty banners stack under the strip's tallest form
+    // windows): under the cards, so it never covers the score or the venue. Long lines wrap
+    // instead of running off; a subtitled clip names who is talking. Scaled about its top centre.
+    const { kR, radioMaxW, radioY, bannerY } = L;
     if (hud.radio && hud.radio.age < (hud.radio.dur ?? 4.5)) {
+      ctx.save();
+      this.scaleAbout(W / 2, radioY, kR);
       const dur = hud.radio.dur ?? 4.5;
       const a = Math.min(1, hud.radio.age / 0.12) * clamp((dur - hud.radio.age) / 0.6, 0, 1);
       const who = hud.radio.who;
@@ -1974,7 +2133,7 @@ export class Renderer {
       ctx.textAlign = 'left';
       ctx.font = `bold 16px ${FONT}`;
       const lines = wrapText(ctx, who ? hud.radio.text : `📻 ${hud.radio.text}`, radioMaxW - 34, 3);
-      ctx.font = `bold 11px ${FONT}`;
+      ctx.font = `bold 13px ${FONT}`;
       const whoW = who ? ctx.measureText(`🔊 ${who.toUpperCase()}`).width : 0;
       ctx.font = `bold 16px ${FONT}`;
       const bw = Math.min(radioMaxW, Math.max(whoW, ...lines.map((l) => ctx.measureText(l).width)) + 34);
@@ -1987,19 +2146,30 @@ export class Renderer {
       ctx.fillRect(rx, radioY + 4, 6, bh - 8);
       let ty = radioY + 8;
       if (who) {
-        ctx.font = `bold 11px ${FONT}`;
+        ctx.font = `bold 13px ${FONT}`;
         ctx.fillStyle = '#ffd400';
-        ctx.fillText(`🔊 ${who.toUpperCase()}`, rx + 16, ty + 11);
+        ctx.fillText(`🔊 ${who.toUpperCase()}`, rx + 16, ty + 12);
         ty += 15;
         ctx.font = `bold 16px ${FONT}`;
       }
       ctx.fillStyle = '#fff';
       lines.forEach((l, i) => ctx.fillText(l, rx + 16, ty + 17 + i * 21));
       ctx.globalAlpha = 1;
+      ctx.restore();
     }
 
+    // toast (big text: milestones, damage, flags...) in the band between the top cards and the track,
+    // where the SC / penalty banners live: while a toast is up it takes their place (it says the same
+    // thing when they appear). Under the round card only a priority-2 toast shows.
+    const toast = hud.toast && hud.toast.age < (hud.toast.dur ?? 1.6) ? hud.toast : null;
+    const venueCard = world.venueBlend < 1 && world.gps > 0;
+    const showToast = toast && (!venueCard || (toast.prio || 0) >= 2);
+
+    ctx.save();
+    this.scaleAbout(W / 2, bannerY, kR);
+    this.anchor('banner', W / 2 - 150, bannerY, 300, world.sc.active && world.penalty > 0 ? 66 : 30, W / 2, bannerY, kR); // the whole banner stack
     // safety car banner
-    if (world.sc.active) {
+    if (world.sc.active && !showToast) {
       const on = Math.sin(this.time * 6) > 0;
       const text = world.sc.phase === 'ending' ? 'SAFETY CAR IN THIS LAP' : world.sc.neutral ? 'SAFETY CAR — RACE NEUTRALISED' : 'SAFETY CAR — NO OVERTAKING';
       ctx.font = `900 16px ${FONT}`;
@@ -2013,39 +2183,52 @@ export class Renderer {
     }
 
     // penalty banner: a served penalty should be unmissable, not a corner note
-    if (world.penalty > 0) {
+    if (world.penalty > 0 && !showToast) {
       const py = bannerY + (world.sc.active ? 36 : 0);
       ctx.textAlign = 'center';
+      ctx.font = `900 14px ${FONT}`;
+      const ptxt = `SERVING PENALTY — ${world.penalty.toFixed(1)}s — NO SCORING`;
+      const pw = Math.max(300, ctx.measureText(ptxt).width + 30);
       ctx.fillStyle = '#e10600';
-      roundRect(ctx, W / 2 - 150, py, 300, 30, 6);
+      roundRect(ctx, W / 2 - pw / 2, py, pw, 30, 6);
       ctx.fill();
       ctx.fillStyle = '#fff';
-      ctx.font = `900 14px ${FONT}`;
       ctx.fillText(`SERVING PENALTY — ${world.penalty.toFixed(1)}s — NO SCORING`, W / 2, py + 20);
     }
+    ctx.restore();
 
-    // toast (big centre text: milestones etc.)
-    if (hud.toast && hud.toast.age < (hud.toast.dur ?? 1.6)) {
-      const t = hud.toast.age;
-      const dur = hud.toast.dur ?? 1.6;
+    if (showToast) {
+      const t = toast.age;
+      const dur = toast.dur ?? 1.6;
       const a = t < 0.2 ? t / 0.2 : t > dur - 0.4 ? (dur - t) / 0.4 : 1;
+      const k = this.uiFor(13);
+      // title + pill are 63 units tall; keep the pill's bottom above the kerb
+      const top = Math.min(bannerY, world.trackTop - 14 - 63 * k);
+      ctx.save();
+      this.scaleAbout(W / 2, top, k);
       ctx.globalAlpha = clamp(a, 0, 1);
       ctx.textAlign = 'center';
-      ctx.font = `900 ${34 + Math.min(1, t * 4) * 6}px ${FONT}`;
-      ctx.fillStyle = hud.toast.color || '#ffd400';
+      ctx.font = `900 ${26 + Math.min(1, t * 4) * 4}px ${FONT}`;
+      ctx.fillStyle = toast.color || '#ffd400';
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
       ctx.lineWidth = 6;
-      ctx.strokeText(hud.toast.text, W / 2, H * 0.36);
-      ctx.fillText(hud.toast.text, W / 2, H * 0.36);
-      if (hud.toast.sub) this.drawPill(hud.toast.sub, W / 2, H * 0.36 + 26);
+      ctx.strokeText(toast.text, W / 2, top + 28);
+      ctx.fillText(toast.text, W / 2, top + 28);
+      if (toast.sub) this.drawPill(toast.sub, W / 2, top + 50);
       ctx.globalAlpha = 1;
+      ctx.restore();
     }
 
     // damage meter under the score card (top-left stays clear of the track), flashes on a hit
+    ctx.save();
+    this.scaleAbout(pad, pad, kTop);
     this.drawDamage(world, hud, pad);
+    this.anchor('damage', pad, pad + 72, DAMAGE_CARD.w, DAMAGE_CARD.h, pad, pad, kTop);
+    ctx.restore();
+    this.k = 1;
 
     // coach card: what to do on the grid (in the empty middle lane), then one short tip at a time for the opening seconds
-    this.drawCoach(world, W, H);
+    this.drawCoach(world, W, H, hud);
 
     // behind the safety car: the weave gauge, then the countdown back to green
     this.drawWeave(world, W);
@@ -2068,6 +2251,7 @@ export class Renderer {
     const x0 = cx - cardW / 2;
     const y0 = mid - SC_GAME.weaveAmplitude - cardH - 24;
     ctx.save();
+    this.scaleAbout(cx, y0 + cardH, this.ui);
     ctx.globalAlpha = 0.94;
     ctx.fillStyle = 'rgba(8,10,16,0.86)';
     roundRect(ctx, x0, y0, cardW, cardH, 10);
@@ -2126,6 +2310,7 @@ export class Renderer {
     ctx.font = `bold 12px ${MONO}`;
     ctx.fillText(`${w.weaves} weaves`, x0 + cardW - 16, ty);
     ctx.restore();
+    this.k = 1;
   }
 
   /** 3 · 2 · 1 in the middle of the track while the safety car peels off; the green flag toast takes over. */
@@ -2140,7 +2325,7 @@ export class Renderer {
     const y = (world.trackTop + world.trackBottom) / 2 + 4;
     ctx.save();
     ctx.translate(W / 2, y);
-    ctx.scale(pop, pop);
+    ctx.scale(pop * this.uiFor(13), pop * this.uiFor(13));
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `900 72px ${FONT}`;
@@ -2164,21 +2349,68 @@ export class Renderer {
    * read off a wall of text while the field is launching. Same card as the rest of the HUD;
    * keys are drawn as keycaps.
    */
-  drawCoach(world, W, H) {
+  drawCoach(world, W, H, hud = null) {
     if (world.gameOver) return;
+    const { ctx } = this;
+    const k = this.ui;
+    const mid = (world.trackTop + world.trackBottom) / 2;
     const sinceGo = world.racing ? world.start.sinceGo : -1;
     if (sinceGo < 0) {
-      const mid = (world.trackTop + world.trackBottom) / 2;
+      ctx.save();
+      this.scaleAbout(W / 2, mid, k);
       this.drawCoachCard(this.touch ? COACH.touchGrid : COACH.grid, W / 2, mid, { accent: '#ff3b3b', alpha: 0.95, anchor: 'middle' });
+      ctx.restore();
+      this.k = 1;
       return;
     }
     const tips = this.touch ? COACH.touchTips : COACH.tips;
     const i = Math.floor(sinceGo / COACH.each);
-    if (i >= tips.length) return;
-    const t = sinceGo - i * COACH.each;
-    const alpha = clamp(Math.min(t / 0.25, (COACH.each - t) / 0.35), 0, 1) * 0.95;
-    // the middle lane again: nothing spawns during the launch, and the pack sits in the outer lanes
-    this.drawCoachCard([tips[i]], W / 2, (world.trackTop + world.trackBottom) / 2, { accent: '#ffd400', alpha, anchor: 'middle', step: `${i + 1}/${tips.length}` });
+    if (i < tips.length) {
+      const t = sinceGo - i * COACH.each;
+      const alpha = clamp(Math.min(t / 0.25, (COACH.each - t) / 0.35), 0, 1) * 0.95;
+      // the middle lane again: nothing spawns during the launch, and the pack sits in the outer lanes
+      ctx.save();
+      this.scaleAbout(W / 2, mid, k);
+      this.drawCoachCard([tips[i]], W / 2, mid, { accent: '#ffd400', alpha, anchor: 'middle', step: tips.length > 1 ? `${i + 1}/${tips.length}` : null });
+      ctx.restore();
+      this.k = 1;
+    }
+    // a just-in-time card, pointing at the widget it is about
+    const c = hud && hud.coach;
+    const card = c && COACH_CARDS[c.id];
+    const a = card && this.anchors[card.at];
+    if (!a || c.age >= COACH_CARD_DUR) return;
+    const alpha = clamp(Math.min(c.age / 0.25, (COACH_CARD_DUR - c.age) / 0.4), 0, 1) * 0.97;
+    const below = a.y + a.h / 2 < H / 2; // top widgets get the card under them, bottom ones above
+    const tx = clamp(a.x + a.w / 2, 30, W - 30), ty = below ? a.y + a.h : a.y;
+    const lines = [this.touch ? card.touch : card.keys];
+    ctx.save();
+    this.scaleAbout(tx, ty, k);
+    const { width } = this.measureCoachCard(lines);
+    // keep the whole card on screen: in local units the screen spans tx - (tx - pad) / k .. tx + (W - pad - tx) / k
+    const lo = tx - (tx - 12) / k + width / 2, hi = tx + (W - 12 - tx) / k - width / 2;
+    const cx = lo > hi ? tx : clamp(tx, lo, hi);
+    const gapY = 6;
+    this.drawCoachCard(lines, cx, below ? ty + gapY : ty - gapY, { accent: card.accent, alpha, anchor: below ? 'top' : 'bottom' });
+    // the 6 px pointer from the card to the widget
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = card.accent;
+    ctx.beginPath();
+    ctx.moveTo(tx - 6, below ? ty + gapY : ty - gapY);
+    ctx.lineTo(tx + 6, below ? ty + gapY : ty - gapY);
+    ctx.lineTo(tx, ty);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    this.k = 1;
+  }
+  /** Width and height a coach card needs for these lines. */
+  measureCoachCard(lines, step = null) {
+    const runs = lines.map((l) => this.coachRuns(l));
+    return {
+      width: Math.max(...runs.map((r) => r.reduce((w, seg) => w + seg.w, 0))) + 32 + (step ? 34 : 0),
+      height: lines.length * 24 + 18,
+    };
   }
 
   /**
@@ -2201,7 +2433,7 @@ export class Renderer {
     ctx.fillStyle = accent;
     ctx.fillRect(x0, y0 + 6, 4, height - 12);
     if (step) {
-      ctx.font = `bold 10px ${MONO}`;
+      ctx.font = `bold ${this.px(10)}px ${MONO}`;
       ctx.fillStyle = '#8a91a0';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
@@ -2291,12 +2523,12 @@ export class Renderer {
     }
     const total = world.damage;
     ctx.textAlign = 'left';
-    ctx.font = `bold 10px ${FONT}`;
+    ctx.font = `bold ${this.px(10)}px ${FONT}`;
     const terminal = total >= 100;
     ctx.fillStyle = terminal ? (Math.sin(this.time * 9) > -0.3 ? '#ff3b3b' : '#7a1010') : total >= DAMAGE.needsStop ? '#ffd400' : '#c9ced9';
-    if (terminal) ctx.font = `900 11px ${FONT}`;
+    if (terminal) ctx.font = `900 ${this.px(11)}px ${FONT}`;
     ctx.fillText(terminal ? 'NEXT HIT = OUT' : total >= DAMAGE.needsStop ? 'DAMAGE · BOX' : 'DAMAGE', x + 12, y + 15);
-    ctx.font = `bold 10px ${FONT}`;
+    ctx.font = `bold ${this.px(10)}px ${FONT}`;
     ctx.textAlign = 'right';
     ctx.fillStyle = terminal ? '#ff3b3b' : '#c9ced9';
     ctx.fillText(terminal ? 'BOX' : `${Math.round(total)}%`, x + w - 12, y + 15);
@@ -2305,7 +2537,7 @@ export class Renderer {
     bars.forEach(([label, v, part], i) => {
       const by = y + 24 + i * 15;
       const hot = hud.damage && hud.damage.part === part && flash > 0;
-      ctx.font = `bold 11px ${FONT}`;
+      ctx.font = `bold ${this.px(11)}px ${FONT}`;
       ctx.fillStyle = hot ? '#fff' : v >= 100 ? '#ff3b3b' : '#8a91a0';
       ctx.fillText(label, x + 12, by + 9);
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
@@ -2354,7 +2586,7 @@ export class Renderer {
   /** Small status pill centred on y, growing left or right from x. */
   drawChip(text, x, y, bg, fg = '#111', align = 'left') {
     const { ctx } = this;
-    ctx.font = `bold 11px ${FONT}`;
+    ctx.font = `bold ${this.px(11)}px ${FONT}`;
     const w = ctx.measureText(text).width + 20;
     const x0 = align === 'right' ? x - w : x;
     ctx.fillStyle = bg;

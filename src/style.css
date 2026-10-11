@@ -58,6 +58,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 .rules { margin-top: 14px; color: var(--muted); font-size: 13px; }
 .rules summary { cursor: pointer; color: var(--text); font-weight: 600; }
 .rules ul { padding-left: 18px; margin: 8px 0 0; line-height: 1.5; }
+.tutorial-reset { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.rules button.link { background: none; border: none; padding: 0; color: var(--yellow); font: inherit; text-decoration: underline; cursor: pointer; min-height: 0; }
+.rules button.link:hover { background: none; color: #fff; }
 
 .board { max-width: 320px; align-self: stretch; }
 .board ol { list-style: none; margin: 8px 0 0; padding: 0; font-family: var(--mono); font-size: 14px; }
@@ -199,7 +202,7 @@ input:focus { outline: 2px solid var(--red); outline-offset: 1px; }
 }
 .pad-btn:hover { background: rgba(8,10,16,0.78); }
 .pad-btn b { font-size: 17px; line-height: 1; }
-.pad-btn span { font-size: 9px; color: var(--muted); font-weight: 600; }
+.pad-btn span { font-size: 10px; color: var(--muted); font-weight: 600; }
 .pad-btn.held, .pad-btn:active { background: rgba(255,255,255,0.22); border-color: #fff; transform: translateY(1px); }
 .pad-btn.small { width: 40px; height: 50px; border-radius: 12px; }
 .pad-btn.small b { font-size: 12px; }
@@ -214,7 +217,7 @@ input:focus { outline: 2px solid var(--red); outline-offset: 1px; }
 /* the BOX button moves into the pad on touch devices */
 .touch .pad .box { position: static; transform: none; min-width: 0; width: 88px; height: 50px; padding: 0 6px; border-radius: 14px; gap: 0; }
 .touch .pad .box b { font-size: 14px; }
-.touch .pad .box span { font-size: 9px; line-height: 1.1; white-space: nowrap; max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
+.touch .pad .box span { font-size: 10px; line-height: 1.1; white-space: nowrap; max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
 .touch .pad .box:active { transform: translateY(1px); }
 .touch .pad .box[hidden] { display: flex; opacity: 0.35; pointer-events: none; }
 
@@ -248,4 +251,12 @@ input:focus { outline: 2px solid var(--red); outline-offset: 1px; }
   .touch .car { width: 112px; }
   .touch .controls { font-size: 12px; margin: 10px 0 8px; }
   .touch .box { bottom: 10px; }
+}
+/* short phones: a slightly narrower pad, so the speedo and tyre cards can grow beside it (renderer.padReserve) */
+@media (max-height: 500px) and (max-width: 1000px) {
+  .pad { gap: 6px; padding: 0 6px; }
+  .pad-btn { width: 58px; }
+  .pad-btn.ers { width: 74px; }
+  .touch .pad .box { width: 82px; }
+  .touch .pad .box span { max-width: 72px; }
 }

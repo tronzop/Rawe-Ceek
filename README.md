@@ -2,7 +2,7 @@
 
 A Ferrari-fan survival racer in plain HTML5 Canvas + JavaScript. No build step, no runtime dependencies.
 
-You are the red car — or the papaya one, or the silver one: pick any of the ten current teams' liveries on the title screen, each with its own handling. The track scrolls under you at ever-increasing speed through a fourteen-round calendar — Monza to Bahrain, three of them under floodlights. Dodge Pirelli tyres, rival cars, oil and debris; ride the slipstream; manage your tyre wear and temperature; behave behind the safety car (the field bunches to its pace — lift to drop back, and you get a moment's grace after the yellow); box in the pit window when the wall lets you; and trust the strategy. (Don't.)
+You are the red car — or the papaya one, or the silver one: pick any of the ten current teams' liveries on the title screen, each with its own handling. The track scrolls under you at ever-increasing speed through a fourteen-round calendar — Monza to Bahrain, three of them under floodlights. Dodge loose tyres, rival cars, oil and debris; ride the slipstream; manage your tyre wear and temperature; behave behind the safety car (the field bunches to its pace — lift to drop back, and you get a moment's grace after the yellow); box in the pit window when the wall lets you; and trust the strategy. (Don't.)
 
 ## Play
 
