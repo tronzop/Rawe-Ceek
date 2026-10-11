@@ -15,6 +15,10 @@ const DATA_FILE = process.env.LEADERBOARD_FILE || path.join(__dirname, 'leaderbo
 const PORT = Number(process.env.PORT) || 8080;
 const MAX_KEEP = 200;
 const MAX_BODY = 4096;
+const MAX_SCORE = 1e7;
+// Behind a reverse proxy (Cloudflare tunnel, nginx) set TRUST_PROXY=1 so the throttle keys on the real client;
+// otherwise X-Forwarded-For is ignored, since anyone can send one and dodge the throttle with it.
+const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || '');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -32,10 +36,25 @@ function readScores() {
     return [];
   }
 }
+// Every read-modify-write runs inside one queue, so two POSTs landing together both persist.
 let writeQueue = Promise.resolve();
-function writeScores(scores) {
-  writeQueue = writeQueue.then(() => fs.promises.writeFile(DATA_FILE, JSON.stringify(scores, null, 2))).catch(() => {});
-  return writeQueue;
+async function writeScores(scores) {
+  // write-then-rename so a crash mid-write never leaves a truncated leaderboard behind
+  const tmp = `${DATA_FILE}.${process.pid}.tmp`;
+  await fs.promises.writeFile(tmp, JSON.stringify(scores, null, 2));
+  await fs.promises.rename(tmp, DATA_FILE);
+}
+/** Adds a sanitized entry and resolves to its 1-based rank (before trimming to MAX_KEEP). */
+export function addScore(entry) {
+  const job = writeQueue.then(async () => {
+    const scores = readScores();
+    scores.push(entry);
+    scores.sort((a, b) => b.score - a.score || a.timestamp - b.timestamp);
+    await writeScores(scores.slice(0, MAX_KEEP));
+    return scores.indexOf(entry) + 1;
+  });
+  writeQueue = job.catch(() => {});
+  return job;
 }
 
 export function sanitize(e) {
@@ -50,8 +69,26 @@ export function sanitize(e) {
   };
 }
 
+/** Score is distance plus bonuses, so it can't be below the distance, and bonuses can't run away from it. */
+export function plausible(e) {
+  return e.score > 0 && e.score <= MAX_SCORE && e.score >= e.distance && e.score <= 2 * e.distance + 5000;
+}
+
+export function clientIp(req, trustProxy = TRUST_PROXY) {
+  if (trustProxy) {
+    const fwd = String(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (fwd) return fwd;
+  }
+  return req.socket?.remoteAddress || '?';
+}
+
 // very small per-IP throttle for POSTs
 const recent = new Map();
+// drop keys with no hits in the last minute, so the map can't grow forever
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, hits] of recent) if (!hits.some((t) => now - t < 60_000)) recent.delete(ip);
+}, 60_000).unref();
 function throttled(ip) {
   const now = Date.now();
   const hits = (recent.get(ip) || []).filter((t) => now - t < 60_000);
@@ -65,13 +102,26 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function serveStatic(req, res) {
-  let urlPath = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+/**
+ * Maps a raw URL pathname to a file under ROOT: { file } or { status } (400 bad encoding, 403 outside / hidden).
+ * Containment uses path.relative, so a sibling like ../Rawe-Ceek-x can't pass a string-prefix test.
+ */
+export function resolveStatic(pathname, root = ROOT) {
+  let urlPath;
+  try { urlPath = decodeURIComponent(pathname); } catch { return { status: 400 }; }
+  if (urlPath.includes('\0')) return { status: 400 };
   if (urlPath === '/') urlPath = '/index.html';
-  const file = path.normalize(path.join(ROOT, urlPath));
-  if (!file.startsWith(ROOT) || file.startsWith(path.join(ROOT, 'server')) || file.includes(`${path.sep}.`)) {
-    res.writeHead(403); res.end(); return;
-  }
+  const file = path.join(root, urlPath);
+  const rel = path.relative(root, file);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return { status: 403 };
+  const parts = rel.split(path.sep);
+  if (parts[0] === 'server' || parts.some((p) => p.startsWith('.'))) return { status: 403 };
+  return { file };
+}
+
+function serveStatic(req, res) {
+  const { file, status } = resolveStatic(new URL(req.url, 'http://x').pathname);
+  if (status) { res.writeHead(status); res.end(); return; }
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) { res.writeHead(404); res.end('Not found'); return; }
     const ext = path.extname(file).toLowerCase();
@@ -102,8 +152,7 @@ const server = http.createServer((req, res) => {
       return json(res, 200, scores);
     }
     if (req.method === 'POST') {
-      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '?';
-      if (throttled(ip)) return json(res, 429, { ok: false, error: 'slow down' });
+      if (throttled(clientIp(req))) return json(res, 429, { ok: false, error: 'slow down' });
       let body = '';
       req.on('data', (chunk) => {
         body += chunk;
@@ -111,16 +160,18 @@ const server = http.createServer((req, res) => {
       });
       req.on('end', async () => {
         if (res.writableEnded) return;
+        let entry;
         try {
-          const entry = sanitize(JSON.parse(body));
-          if (entry.score <= 0) return json(res, 400, { ok: false, error: 'no score' });
-          const scores = readScores();
-          scores.push(entry);
-          scores.sort((a, b) => b.score - a.score || a.timestamp - b.timestamp);
-          await writeScores(scores.slice(0, MAX_KEEP));
-          json(res, 200, { ok: true, rank: scores.indexOf(entry) + 1 });
+          entry = sanitize(JSON.parse(body));
         } catch {
-          json(res, 400, { ok: false, error: 'invalid json' });
+          return json(res, 400, { ok: false, error: 'invalid json' });
+        }
+        if (entry.score <= 0) return json(res, 400, { ok: false, error: 'no score' });
+        if (!plausible(entry)) return json(res, 400, { ok: false, error: 'nice try' });
+        try {
+          json(res, 200, { ok: true, rank: await addScore(entry) });
+        } catch {
+          json(res, 500, { ok: false, error: 'could not save' });
         }
       });
       return;
