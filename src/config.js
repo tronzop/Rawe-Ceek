@@ -70,9 +70,10 @@ export const COMPOUNDS = {
   soft: { id: 'soft', label: 'SOFT', short: 'S', color: '#ff3b3b', grip: 1.12, pace: 1.05, wearRate: 1.7 },
   medium: { id: 'medium', label: 'MEDIUM', short: 'M', color: '#ffd400', grip: 1.0, pace: 1.0, wearRate: 1.0 },
   hard: { id: 'hard', label: 'HARD', short: 'H', color: '#f2f2f2', grip: 0.9, pace: 0.96, wearRate: 0.62 },
-  inter: { id: 'inter', label: 'INTER', short: 'I', color: '#2ecc71', grip: 0.8, pace: 1.0, wearRate: 1.15, wet: 0.6 },
-  wet: { id: 'wet', label: 'WET', short: 'W', color: '#2f80ff', grip: 0.72, pace: 1.0, wearRate: 1.05, wet: 1.0 },
+  inter: { id: 'inter', label: 'INTER', short: 'I', color: '#2ecc71', grip: 0.8, pace: 1.0, wearRate: 1.15, wet: 0.6, dryWear: 2.5 },
+  wet: { id: 'wet', label: 'WET', short: 'W', color: '#2f80ff', grip: 0.72, pace: 1.0, wearRate: 1.05, wet: 1.0, dryWear: 3.5 },
 };
+// `dryWear`: rain tyres on a dry track (rain below TYRES.dryBelow) chew through themselves this many times faster.
 // `grip` is cornering (steering speed, and the throttle you can use once it falls below 1);
 // `pace` is straight-line speed on top of that, so a fresh soft is quicker than a medium.
 export const COMPOUND_ORDER = ['soft', 'medium', 'hard', 'inter', 'wet'];
@@ -84,8 +85,18 @@ export const TYRES = {
   // Above this wear (0..100) grip falls off linearly to gripAtCliff at 100.
   cliffStart: 65,
   gripAtCliff: 0.45,
-  // Dry tyres in the rain or wets in the dry lose this much grip.
+  // Grip multiplier for a tyre in completely the wrong conditions (see logic.suitability: 0 → this, 1 → full grip).
   wrongWeatherGrip: 0.55,
+  // Weather suitability curves (track wetness 0..1). Slicks are happy until `slick.full` and useless from
+  // `slick.zero`; inters peak between `inter.lo` and `inter.hi` and fade to `inter.dry` / `inter.flooded` at
+  // the ends; full wets are at their best from `wet.full` and useless below `wet.zero`.
+  suit: {
+    slick: { full: 0.25, zero: 0.6 },
+    inter: { lo: 0.35, hi: 0.7, dry: 0.4, flooded: 0.2 },
+    wet: { full: 0.75, zero: 0.1 },
+  },
+  dryBelow: 0.2, // rain tyres wear at COMPOUNDS.*.dryWear below this wetness
+  rateSmoothing: 1, // s: the wear rate shown on the tyre card is an EMA over about this long
 };
 
 export const PIT = {
@@ -101,6 +112,7 @@ export const PIT = {
   // Rejoining: time spent arcing back onto the track, then ghosted grace once you are on it.
   mergeTime: 1.1,
   graceAfterExit: 1.6,
+  typicalStop: 2.6, // s stationary in an ordinary stop (for the cost estimate on the SC cheap-stop chip)
 };
 
 export const WEATHER = {
@@ -108,7 +120,12 @@ export const WEATHER = {
   rainChancePerSecond: 0.012,
   rainDuration: { min: 18, max: 34 },
   dryGap: 25,
-  transition: 4, // seconds for the track to go from dry to wet and back
+  transition: 10, // seconds for the track to go from dry to fully wet (and back)
+  forecast: { min: 8, max: 14 }, // the wall sees the rain coming this many seconds before it starts
+  dryForecast: 8, // ...and calls the end of a shower this long before it stops
+  lightShare: 0.4, // share of showers that are light: the track only gets damp (inter weather)
+  damp: 0.5, // wetness a light shower peaks at, and where a drying track holds on its way out
+  hold: { min: 6, max: 10 }, // s the drying track holds at `damp` (the inter window on the way out)
 };
 
 export const SPAWN = {
@@ -134,6 +151,7 @@ export const SCORING = {
   overtake: 60,
   closeCall: 25,
   closeCallDistance: 16,
+  drs: 20, // a DRS gate (and its battery top-up)
   milestoneMetres: 1000,
 };
 
@@ -188,8 +206,10 @@ export const VENUES = [
 export const GP = {
   lengthMetres: 1500,
   finishBonus: 150,
-  points: 25, // championship points banked per completed GP
+  points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], // championship points by finishing position at each chequered flag
   transition: 3, // seconds to morph the scenery between venues
+  placeGapMetres: 60, // track between two places: a pit stop that costs 180 m costs three places
+  fieldSize: 20, // you can drop no further than this
 };
 
 export const SAFETY_CAR = {
@@ -229,6 +249,8 @@ export const RIVAL_AI = {
   defendChance: 0.35, // rivals that move to cover your lane
   defendRange: 340,
   defendSpeed: 70, // px/s lateral
+  commitRange: 2.5 * 340, // px: a defender picks the lane it will cover this far ahead of you (2.5 × defendRange)...
+  commitTell: 0.5, // ...flashes its rain light and an arrow for this long, then slides there and holds
   paceRange: [0.62, 0.85], // ordinary traffic runs at this fraction of the current base speed (you are ~1.0)
   passMargin: [180, 320], // px/s a car attacking from behind runs above your speed until it is past your nose
 };
@@ -327,3 +349,10 @@ export const PITGAME = {
   recordBonus: 100,
   cleanBonus: 50, // no misses
 };
+
+/**
+ * Flow: close calls, overtakes and DRS gates chained inside `window` seconds of each other build a
+ * score multiplier (+`step` each, up to `max`). Contact, oil, a penalty or the pit lane break it.
+ * A close call nearer than `scrapeGap` px is a scrape: it pays double, with a flash and a beat of slow motion.
+ */
+export const FLOW = { step: 0.25, max: 3, window: 3, scrapeGap: 6, scrapeSlowmo: 0.08 };

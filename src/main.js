@@ -1,5 +1,5 @@
 // Bootstrap: wires input, world, renderer, audio and the DOM screens together.
-import { COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, SC_GAME, SPEED, STORAGE_KEYS, TYRES, VENUES, WORLD } from './config.js';
+import { COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, SC_GAME, SPEED, STORAGE_KEYS, TYRES, VENUES, WORLD } from './config.js';
 import { Input, detectTouch } from './input.js';
 import { World } from './world.js';
 import { Renderer } from './render.js';
@@ -10,7 +10,7 @@ import { Career, TROPHIES } from './career.js';
 import { DRIVERS, OPTIONAL_CLIPS, clipLine, resolveClip } from './grid.js';
 import { CARS, STAT_BARS, carById, carQuirks, statBars, teamOfCar } from './cars.js';
 import { drawLivery } from './livery.js';
-import { clamp, describeCrash, formatDistance, lerp, positionLabel } from './logic.js';
+import { bestCompound, clamp, describeCrash, formatDistance, lerp, positionLabel, wrongForWeather } from './logic.js';
 
 const $ = (sel) => document.querySelector(sel);
 const canvas = $('#game');
@@ -55,7 +55,7 @@ renderer.debugHitbox = params.get('hitbox') === '1';
 // The car you drive: remembered between visits, chosen on the title screen.
 let car = carById((() => { try { return localStorage.getItem(STORAGE_KEYS.car); } catch { return null; } })());
 let career = Career.load();
-const hud = { radio: null, toast: null, damage: null, best: Leaderboard.best(), musicOn: audio.musicOn, points: career.points };
+const hud = { radio: null, toast: null, damage: null, drs: null, best: Leaderboard.best(), musicOn: audio.musicOn, points: career.points };
 
 let state = 'title'; // title | playing | paused | over
 let world = new World(onWorldEvent, car);
@@ -82,6 +82,7 @@ function startGame() {
   hud.radio = null;
   hud.toast = null;
   hud.damage = null;
+  hud.drs = null;
   radioQueue.length = 0;
   submitted = false;
   state = 'playing';
@@ -96,7 +97,7 @@ function pause() {
   if (state !== 'playing') return;
   state = 'paused';
   input.clear();
-  $('#pauseLine').textContent = `Race suspended. ${world.car.name} · ${world.venue.name} · ${positionLabel(world.overtakes)}`;
+  $('#pauseLine').textContent = `Race suspended. ${world.car.name} · ${world.venue.name} · ${positionLabel(world.position)}`;
   show('pause');
   audio.suspend();
 }
@@ -137,7 +138,7 @@ function gameOver(payload = {}) {
   $('#overTitle').textContent = newBest ? 'New personal best!' : 'Retired';
   screens.over.classList.toggle('newbest', newBest);
   // career + trophies
-  const result = Career.record(world.run, GP.points);
+  const result = Career.record(world.run);
   career = result.career;
   hud.points = career.points;
   renderCareer();
@@ -158,7 +159,7 @@ function gameOver(payload = {}) {
   $('#finalStats').innerHTML = [
     ['Car', world.car.name],
     ['Distance', formatDistance(world.distance)],
-    ['Grands Prix', `${world.gps} (+${world.gps * GP.points} pts)`],
+    ['Grands Prix', `${world.gps} (+${world.run.points || 0} pts${world.run.bestFinish ? `, best P${world.run.bestFinish}` : ''})`],
     ['Overtakes', world.overtakes],
     ['Close calls', world.closeCalls],
     ['Pit stops', world.pit.stops],
@@ -193,22 +194,26 @@ const RADIO_PREEMPT = new Set([
 const radioQueue = [];
 /** Wrong tyres for the weather: slicks on a wet track or wets on a dry one. */
 function wrongTyres() {
-  const c = COMPOUNDS[world.tyre.compound];
-  return (world.rain > 0.35 && c.wet === undefined) || (world.rain < 0.1 && c.wet !== undefined);
+  return wrongForWeather(world.tyre.compound, world.rain);
 }
-/** Does the car actually need the next stop (wear, puncture, damage, weather)? */
+/**
+ * Does the car actually need the next stop (wear, puncture, damage, weather)? The wear forecast makes
+ * it one window early: tyres that WON'T LAST to the end of the next window need this one.
+ */
 function carNeedsStop() {
-  return world.tyre.punctured || world.tyre.wear > TYRES.cliffStart || world.damage >= DAMAGE.needsStop || wrongTyres();
+  return world.tyre.punctured || world.tyre.wear > TYRES.cliffStart || world.damage >= DAMAGE.needsStop || wrongTyres()
+    || world.wearForecast?.verdict === 'wontLast';
 }
-function radio(kind, ctx = {}) {
+/** A pit-wall message: a line for `kind` from radio.js, or `own` text when the wall has something specific to say. */
+function radio(kind, ctx = {}, own = null) {
   // give the pit wall eyes: the line picker can react to the car's actual state
   const c = COMPOUNDS[world.tyre.compound];
-  const text = radioLine(kind, {
+  const text = own ?? radioLine(kind, {
     ...ctx,
     wear: world.tyre.wear,
     onSlicks: c.wet === undefined,
     onWets: c.wet !== undefined,
-    position: positionLabel(world.overtakes),
+    position: positionLabel(world.position),
     urgent: carNeedsStop(),
   });
   if (!text) return;
@@ -299,7 +304,8 @@ function onWorldEvent(evt, payload = {}) {
       if (payload.lost) toast(payload.part === 'wing' ? 'FRONT WING GONE' : 'FLOOR DESTROYED', '#ff3b3b', 'one more hit retires the car — box for repairs');
       radio('contact', { part: payload.part, lost: payload.lost, driver: payload.driver });
       break;
-    case 'drs': audio.drs(); toast('DRS', '#2ecc71', `+${ERS.drsRefill} battery`); break;
+    // no toast: the ERS bar flashes with what the battery actually got (see Renderer.drawHud)
+    case 'drs': audio.drs(); hud.drs = { age: 0, gain: payload.gain ?? ERS.drsRefill }; break;
     case 'pushing': say([Math.random() < 0.4 ? 'hammertime' : null, 'pushing'], { volume: 1, minGap: 10 }, 'pushing'); break;
     case 'milestone':
       toast(`${payload.km} km`, '#ffd400');
@@ -331,19 +337,32 @@ function onWorldEvent(evt, payload = {}) {
       break;
     case 'pitOut': {
       const c = COMPOUNDS[payload.compound];
-      if (payload.record) { audio.fanfare(); toast(`${payload.time.toFixed(2)}s RECORD STOP`, '#7df9ff', `${c.label} fitted`); radio('pitRecord'); }
-      else if (payload.clean) { audio.drs(); toast(`${payload.time.toFixed(2)}s`, '#2ecc71', `${c.label} fitted · clean stop`); radio('pitOut'); }
-      else { toast(`${payload.time.toFixed(2)}s`, '#ff3b3b', `${c.label} fitted · ${payload.misses} wheel gun problem${payload.misses > 1 ? 's' : ''}`); radio('pitSlow'); }
+      // what the stop cost against the field, in track and in places
+      const cost = `−${Math.round(payload.lossMetres || 0)} m · ${payload.places ? `−${payload.places} place${payload.places > 1 ? 's' : ''}` : 'no places lost'}`;
+      if (payload.record) { audio.fanfare(); toast(`${payload.time.toFixed(2)}s RECORD STOP`, '#7df9ff', `${c.label} fitted · ${cost}`); radio('pitRecord'); }
+      else if (payload.clean) { audio.drs(); toast(`${payload.time.toFixed(2)}s`, '#2ecc71', `${c.label} fitted · ${cost}`); radio('pitOut'); }
+      else { toast(`${payload.time.toFixed(2)}s`, '#ff3b3b', `${payload.misses} wheel gun problem${payload.misses > 1 ? 's' : ''} · ${cost}`); radio('pitSlow'); }
       break;
     }
+    // the last two seconds of the window: a tick each half second (the chip and the bar blink with it)
+    case 'pitWindowTick': if (carNeedsStop()) audio.blip(1568, 0.035, 'square', 0.07); break;
     case 'rainStart': {
+      // the toast names the tyre for this shower: inters for a light one, wets for the real thing
       const c = COMPOUNDS[world.tyre.compound];
-      toast('RAIN', '#7fb2ff', c.wet === undefined ? `on ${c.label.toLowerCase()}s — think about inters` : `${c.label.toLowerCase()}s like it`);
+      const best = COMPOUNDS[payload.best || bestCompound(world.rainPeak)];
+      toast(payload.peak < 1 ? 'LIGHT RAIN' : 'HEAVY RAIN', '#7fb2ff', c.id === best.id ? `${c.label.toLowerCase()}s like it` : `on ${c.label.toLowerCase()}s — ${best.label.toLowerCase()}s are the call`);
       say(['isthatglock'], { volume: 0.9, minGap: 30 });
       radio('rainStart');
       break;
     }
     case 'rainStop': radio('rainStop'); break;
+    case 'forecast': {
+      // the radar: the venue card counts it down; the wall says what it means for the tyres
+      const n = Math.round(payload.in);
+      if (payload.kind === 'rain') radio('forecast', {}, payload.peak < 1 ? `Light rain in ${n} seconds. Inters will do.` : `Rain in ${n} seconds, and it is a big one. Think wets.`);
+      else radio('forecast', {}, `Rain stopping in about ${n} seconds. Track will dry — slicks next.`);
+      break;
+    }
     case 'compound': {
       const c = COMPOUNDS[payload.compound];
       toast(`${c.label} NEXT`, c.color, 'selected for the next stop');
@@ -351,7 +370,12 @@ function onWorldEvent(evt, payload = {}) {
       break;
     }
     // --- expansion ---
-    case 'chequered': audio.fanfare(); say([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 }); toast('CHEQUERED FLAG', '#fff', `${payload.venue} · +${payload.bonus} · ${GP.points} pts`); radio('chequered', { venue: payload.venue }); break;
+    case 'chequered':
+      audio.fanfare();
+      say([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 });
+      toast('CHEQUERED FLAG', '#fff', `${payload.venue} · P${payload.position} · ${payload.points ? `+${payload.points} pts` : 'no points'}`);
+      radio('chequered', { venue: payload.venue });
+      break;
     case 'venue': setTimeout(() => radio('venue', { venue: payload.venue.name }), 1800); break; // the renderer shows the round card
     case 'night': setTimeout(() => radio('night'), 4500); break;
     case 'scDeployed': audio.siren(); say(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking · lift to hold station'); radio('scDeployed'); break;
@@ -411,7 +435,9 @@ function syncBoxButton() {
   const hidden = !racing || world.pit.inLane;
   const nc = COMPOUNDS[world.nextCompound];
   const label = !racing ? '' : world.pit.requested ? 'BOXING…' : world.pit.open ? 'BOX BOX' : 'BOX';
-  const sub = !racing ? '' : world.pit.open ? `fit ${nc.label.toLowerCase()}s · B`
+  const why = world.pit.reason;
+  const sub = !racing ? '' : world.pit.open
+    ? (why === 'puncture' ? 'puncture — box now' : why === 'damage' ? 'repairs — box now' : why === 'sc' ? 'SC cheap stop · B' : `fit ${nc.label.toLowerCase()}s · ${Math.ceil(world.pit.left)}s · B`)
     : world.pit.cooldown > 0 ? 'fresh tyres — stay out' : `window in ${Math.ceil(world.pitCountdown())}s`;
   // this runs every frame: only touch the DOM when something actually changed
   const key = `${hidden}|${world.pit.open}|${world.pit.requested}|${label}|${sub}`;
@@ -659,6 +685,7 @@ function frame(now) {
     }
     if (hud.toast) hud.toast.age += dt;
     if (hud.damage) hud.damage.age += dt;
+    if (hud.drs) hud.drs.age += dt;
     hud.musicOn = audio.musicOn;
     renderer.render(world, hud, dt);
     syncBoxButton();

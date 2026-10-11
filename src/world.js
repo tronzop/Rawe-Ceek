@@ -1,8 +1,22 @@
 // The simulation. Owns every gameplay entity and advances them by dt.
 // It knows nothing about the canvas or audio; it reports interesting moments
 // through `emit(event, payload)` so the presentation layer can react.
+//
+// Events for the race-craft layer (flow, track position, the pit window, the weather radar):
+//  - 'flowTier'      { tier, mult, up, reason }  flow tier changed (0 = ×1–1.25, 1 = ×1.5, 2 = ×2, 3 = ×2.5, 4 = ×3);
+//                    reason on a drop: 'timeout' | 'contact' | 'oil' | 'penalty' | 'pit'
+//  - 'scrape'        { driver, type }  a close call nearer than FLOW.scrapeGap (double pay, slow motion)
+//  - 'passedBy'      { hz, driver, team, teammate, side: 'left'|'right', position }  a car from behind cleared
+//                    your nose (left = above you on screen); costs a place
+//  - 'pitOpen'       { reason: 'window'|'puncture'|'damage'|'sc' }
+//  - 'pitWindowTick' { left }  the last two seconds of a window, every half second (2, 1.5, 1, 0.5)
+//  - 'pitOut'        adds { lossMetres, places, position } to the wheel-gun summary
+//  - 'drs'           { gain }  battery actually added
+//  - 'forecast'      { kind: 'rain'|'dry', in, peak?, best? }  the radar: rain in `in` s (peak 1 heavy, WEATHER.damp light), or the end of it
+//  - 'rainStart'     { peak, best }
+//  - 'chequered'     adds { position, points } (F1 points by position)
 import {
-  COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, HITBOX, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SC_GAME, SCORING, SCORING_EXTRA, SLIPSTREAM,
+  COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, FLOW, GP, HITBOX, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SC_GAME, SCORING, SCORING_EXTRA, SLIPSTREAM,
   SPAWN, SPEED, START, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WARN, WEATHER, WORLD,
 } from './config.js';
 import {
@@ -10,6 +24,7 @@ import {
   rectEllipseGap, rectGap, playerSpeed, wrongForWeather, spawnInterval, tempGrip, towFactor, venueIndexAt, wearDelta, judgeWheel, sweepPos, stopSummary,
   contactOutcome, damageEffects, lightsFullAt, lightsLit, totalDamage, weaveBonus, weaveHeat, weaveZone,
   carHitParts, foldY, freeLanes, partsGap, partsOverlap, pickInLanes, rectsBounds,
+  clampPosition, flowPay, flowStep, flowTier, forecastHorizon, pitLossMetres, pitOpenLeft, placesLost, pointsFor, wearForecast,
 } from './logic.js';
 import { EMPTY_RUN } from './career.js';
 import { DRIVERS, LEGEND_BONUS, LEGEND_CHANCE, TEAMS, teamOf } from './grid.js';
@@ -91,11 +106,25 @@ export class World {
     this.raining = false;
     this.rainTimer = 0;
     this.dryTimer = WEATHER.firstRainAfter;
+    this.rainPeak = 1; // how wet this shower gets: 1, or WEATHER.damp for a light one
+    this.dampHold = 0; // s the drying track still holds at WEATHER.damp
+    this.forecast = null; // { kind: 'rain'|'dry', in: seconds, peak } once the wall can see the weather turning
+    // flow: chained close calls / overtakes / DRS gates multiply what they pay (see FLOW)
+    this.flow = { mult: 1, timer: 0, tier: 0 };
+    this.slowmo = 0; // s of scrape slow motion left
+    this.scrapeFlash = 0; // 0..1 white rim round the car after a scrape
+    // track position: P13 at the back of the grid, a place per pass either way, places lost in the pits
+    this.position = START.gridCars + 1;
     this.flash = 0; // lightning
-    this.tyre = { compound: 'medium', wear: 0, punctured: false, temp: 1 };
+    this.tyre = { compound: 'medium', wear: 0, punctured: false, temp: 1, rate: 0 }; // rate: wear %/s (EMA), for the forecast
     this.nextCompound = 'medium';
     this.ers = { charge: ERS.max, boosting: false };
-    this.pit = { open: false, wasOpen: false, inLane: false, phase: 'none', timer: 0, stopFor: 0, slow: false, stops: 0, requested: false, game: null, cooldown: 0 };
+    this.pit = {
+      open: false, wasOpen: false, inLane: false, phase: 'none', timer: 0, stopFor: 0, slow: false, stops: 0, requested: false, game: null, cooldown: 0,
+      // why it is open ('window' | 'puncture' | 'damage' | 'sc'), seconds of window left, the last countdown tick
+      reason: null, left: 0, tick: 0,
+      lossPx: 0, lossMetres: 0, placesLost: 0, // what the current / last stop cost against the field
+    };
     this.player = {
       x: playerXFor(this.width, this.height),
       y: (this.trackTop + this.trackBottom) / 2,
@@ -194,6 +223,21 @@ export class World {
     by[source] = (by[source] || 0) + pts;
   }
   pitCountdown() { return nextPitWindowIn(this.elapsed); }
+  /**
+   * The tyre card's forecast: projected wear when the next window you could still use closes, and the
+   * verdict (makesIt | marginal | wontLast). Null in the lane, on a puncture, or before the rate is known.
+   */
+  get wearForecast() {
+    if (this.pit.inLane || this.tyre.punctured || this.tyre.rate <= 0) return null;
+    return wearForecast(this.tyre.wear, this.tyre.rate, forecastHorizon(this.elapsed));
+  }
+  /** What the wetness will be once the weather the wall can see has arrived (the forecast, else now). */
+  get expectedRain() {
+    const fc = this.forecast;
+    if (fc && fc.kind === 'rain') return fc.peak;
+    if (fc && fc.kind === 'dry') return 0;
+    return this.raining ? this.rainPeak : 0; // not raining: the track is dry or drying
+  }
 
   radio(kind, ctx) {
     this.emit('radio', { kind, ctx });
@@ -252,8 +296,40 @@ export class World {
     w.dir = dir;
   }
 
-  addPopup(x, y, text, color = '#ffd400') {
-    this.popups.push({ x, y, text, color, age: 0, life: 1.1 });
+  /**
+   * A floating label. `value` (points) makes it a score popup: drawn as "+value TEXT" and bigger the
+   * more it pays. Popups landing on top of a fresh one stack upwards instead of overprinting it.
+   */
+  addPopup(x, y, text, color = '#ffd400', value = 0) {
+    let yy = y;
+    for (let i = 0; i < 6 && this.popups.some((pp) => pp.age < 0.5 && Math.abs(pp.x - x) < 90 && Math.abs(pp.y - yy) < 18); i++) yy -= 22;
+    this.popups.push({ x, y: yy, text, color, value, age: 0, life: 1.1 });
+  }
+
+  // ----- flow -----
+  /** One more chained move: the multiplier steps up and the window refills. Returns the new multiplier. */
+  bumpFlow() {
+    const f = this.flow;
+    f.mult = flowStep(f.mult);
+    f.timer = FLOW.window;
+    this.run.flowMax = Math.max(this.run.flowMax || 1, f.mult);
+    this.syncFlowTier();
+    return f.mult;
+  }
+  /** Contact, oil, a penalty or the pit lane: the chain is broken. */
+  breakFlow(reason) {
+    const f = this.flow;
+    if (f.mult <= 1 && f.timer <= 0) return;
+    f.mult = 1;
+    f.timer = 0;
+    this.syncFlowTier(reason);
+  }
+  syncFlowTier(reason = null) {
+    const tier = flowTier(this.flow.mult);
+    if (tier === this.flow.tier) return;
+    const up = tier > this.flow.tier;
+    this.flow.tier = tier;
+    this.emit('flowTier', { tier, mult: this.flow.mult, up, reason });
   }
 
   // ----- main step -----
@@ -272,7 +348,15 @@ export class World {
     const cineTarget = this.pit.requested || (this.pit.inLane && (this.pit.phase === 'entry' || this.pit.phase === 'merge')) ? 1 : 0;
     if (this.player.grace > 0) this.player.grace = Math.max(0, this.player.grace - dt);
     this.cine += (cineTarget - this.cine) * Math.min(1, dt * 5);
-    const wdt = dt * lerp(1, 0.45, this.cine); // world time for everything that could hit you
+    // world time for everything that could hit you (a scrape drops it into slow motion for a beat)
+    const wdt = dt * lerp(1, 0.45, this.cine) * (this.slowmo > 0 ? 0.3 : 1);
+    if (this.slowmo > 0) this.slowmo = Math.max(0, this.slowmo - dt);
+    this.scrapeFlash = Math.max(0, this.scrapeFlash - dt * 4);
+    // the flow chain runs out unless the next move comes inside the window
+    if (this.flow.timer > 0) {
+      this.flow.timer = Math.max(0, this.flow.timer - dt);
+      if (this.flow.timer === 0) { this.flow.mult = 1; this.syncFlowTier('timeout'); }
+    }
     this.updateWeather(dt);
     this.updateVenue(dt);
     this.updateSafetyCar(dt, input);
@@ -321,7 +405,7 @@ export class World {
           if (!s.jumped && s.reaction <= START.reactionWindow) {
             this.addScore(START.reactionBonus, 'other');
             this.run.greatStarts += 1;
-            this.addPopup(this.player.x, this.player.y - 50, `+${START.reactionBonus} GREAT START`, '#2ecc71');
+            this.addPopup(this.player.x, this.player.y - 50, 'GREAT START', '#2ecc71', START.reactionBonus);
             this.emit('greatStart', { reaction: s.reaction });
           }
         } else if (s.sinceGo > 1.2) { s.reaction = s.sinceGo; this.emit('slowStart'); }
@@ -352,12 +436,24 @@ export class World {
   updateWeather(dt) {
     const bias = this.venue.rainBias;
     const wasRain = this.rain;
+    const step = dt / WEATHER.transition;
+    const fc = this.forecast;
+    if (fc) fc.in = Math.max(0, fc.in - dt);
     if (this.raining) {
       this.rainTimer -= dt;
-      this.rain = Math.min(1, this.rain + dt / WEATHER.transition);
+      // towards this shower's peak (a light one only makes the track damp)
+      this.rain = this.rain < this.rainPeak ? Math.min(this.rainPeak, this.rain + step) : Math.max(this.rainPeak, this.rain - step);
+      // the wall sees the end of it coming
+      if (!fc && bias > 0 && this.rainTimer > 0 && this.rainTimer <= WEATHER.dryForecast) {
+        this.forecast = { kind: 'dry', in: this.rainTimer };
+        this.emit('forecast', { kind: 'dry', in: this.rainTimer });
+      }
       if (this.rainTimer <= 0 || bias === 0) {
         this.raining = false;
         this.dryTimer = WEATHER.dryGap;
+        this.forecast = null;
+        // a properly wet track dries through the inter window, and holds there a while
+        this.dampHold = this.rain > WEATHER.damp ? rand(WEATHER.hold.min, WEATHER.hold.max) : 0;
         this.emit('rainStop');
       }
       // storms: lightning once the track is properly wet
@@ -366,12 +462,29 @@ export class World {
         this.emit('thunder');
       }
     } else {
-      this.rain = Math.max(0, this.rain - dt / WEATHER.transition);
-      this.dryTimer -= dt;
-      if (this.dryTimer <= 0 && Math.random() < WEATHER.rainChancePerSecond * bias * dt) {
-        this.raining = true;
-        this.rainTimer = rand(WEATHER.rainDuration.min, WEATHER.rainDuration.max);
-        this.emit('rainStart');
+      // drying: down to damp, hold, then on to dry
+      if (this.rain > WEATHER.damp) this.rain = Math.max(this.dampHold > 0 ? WEATHER.damp : 0, this.rain - step);
+      else if (this.dampHold > 0 && this.rain > 0) this.dampHold = Math.max(0, this.dampHold - dt);
+      else this.rain = Math.max(0, this.rain - step);
+      if (fc && fc.kind === 'rain') {
+        // the forecast shower arrives (or the venue turns out to be a desert)
+        if (bias === 0) this.forecast = null;
+        else if (fc.in <= 0) {
+          this.raining = true;
+          this.rainTimer = rand(WEATHER.rainDuration.min, WEATHER.rainDuration.max);
+          this.rainPeak = fc.peak;
+          this.forecast = null;
+          this.emit('rainStart', { peak: fc.peak, best: bestCompound(fc.peak) });
+        }
+      } else {
+        if (fc) this.forecast = null;
+        this.dryTimer -= dt;
+        if (this.dryTimer <= 0 && Math.random() < WEATHER.rainChancePerSecond * bias * dt) {
+          // the radar sees it first: a few seconds to get the right tyre on the plan
+          const peak = Math.random() < WEATHER.lightShare ? WEATHER.damp : 1;
+          this.forecast = { kind: 'rain', in: rand(WEATHER.forecast.min, WEATHER.forecast.max), peak };
+          this.emit('forecast', { kind: 'rain', in: this.forecast.in, peak, best: bestCompound(peak) });
+        }
       }
     }
     // the planned tyre follows the weather: when the track crosses into slick-killing wet (or dries
@@ -390,8 +503,14 @@ export class World {
       this.run.gps = done;
       this.addScore(GP.finishBonus, 'gp');
       this.breather = SPAWN.breather; // a moment to breathe (and read the flag) before the next round's traffic
-      this.addPopup(this.player.x, this.player.y - 50, `+${GP.finishBonus} CHEQUERED`, '#fff');
-      this.emit('chequered', { gp: done, bonus: GP.finishBonus, venue: this.venue.name });
+      // championship points for where you crossed the line; the next round starts from the back of the grid again
+      const position = clampPosition(this.position);
+      const points = pointsFor(position);
+      this.run.points = (this.run.points || 0) + points;
+      this.run.bestFinish = Math.min(this.run.bestFinish || GP.fieldSize, position);
+      this.position = START.gridCars + 1;
+      this.addPopup(this.player.x, this.player.y - 50, 'CHEQUERED', '#fff', GP.finishBonus);
+      this.emit('chequered', { gp: done, bonus: GP.finishBonus, venue: this.venue.name, position, points });
     }
     if (idx !== this.venueIndex) {
       this.venuePrev = this.venueIndex;
@@ -426,7 +545,7 @@ export class World {
           sc.jump = 0;
           this.addScore(SC_GAME.jumpBonus, 'other');
           this.run.scJumps += 1;
-          this.addPopup(this.player.x, this.player.y - 80, `+${SC_GAME.jumpBonus} JUMP`, '#2ecc71');
+          this.addPopup(this.player.x, this.player.y - 80, 'JUMP', '#2ecc71', SC_GAME.jumpBonus);
           this.emit('scJump');
         }
       }
@@ -506,7 +625,7 @@ export class World {
     if (sc.clean) {
       this.run.scClean += 1;
       this.addScore(SAFETY_CAR.restartBonus, 'other');
-      this.addPopup(this.player.x, popY, `+${SAFETY_CAR.restartBonus} CLEAN`, '#2ecc71');
+      this.addPopup(this.player.x, popY, 'CLEAN', '#2ecc71', SAFETY_CAR.restartBonus);
       popY -= 26;
     }
     // the weave pays out: warm tyres restart with grip and a bonus, cold ones restart on ice
@@ -516,7 +635,7 @@ export class World {
       weaveBonusPts = weaveBonus(w.inBand, w.total);
       warm = weaveZone(w.heat) === 'warm';
       if (warm) this.run.warmRestarts += 1;
-      if (weaveBonusPts > 0) this.addPopup(this.player.x, popY, `+${weaveBonusPts} ${warm ? 'WARM TYRES' : 'WEAVE'}`, '#ffd400');
+      if (weaveBonusPts > 0) this.addPopup(this.player.x, popY, warm ? 'WARM TYRES' : 'WEAVE', '#ffd400', weaveBonusPts);
       else this.addPopup(this.player.x, popY, weaveZone(w.heat) === 'cold' ? 'COLD TYRES' : 'BLISTERED', weaveZone(w.heat) === 'cold' ? '#7df9ff' : '#ff3b3b');
       this.addScore(weaveBonusPts, 'other');
       this.run.scWeaves += w.weaves;
@@ -526,14 +645,34 @@ export class World {
     this.emit('scRestart', { clean: sc.clean, warm, weaveBonus: weaveBonusPts });
   }
 
+  /** Speed the field runs at while you are in the lane (what a stop is measured against): the safety car's, when it is out. */
+  get pitRef() {
+    const base = baseSpeed(this.elapsed);
+    return this.sc.active ? base * SAFETY_CAR.speedCap * SC_GAME.paceFactor : base;
+  }
+  /** Metres a typical stop would cost right now (the SC cheap-stop chip). */
+  pitEstimate() { return pitLossMetres(this.pitRef, PIT.typicalStop); }
+
   updatePit(dt, input) {
-    if (this.pit.cooldown > 0) this.pit.cooldown = Math.max(0, this.pit.cooldown - dt);
-    const open = pitWindowOpen(this.elapsed) && this.pit.cooldown <= 0;
-    if (open && !this.pit.wasOpen && !this.pit.inLane) this.emit('pitOpen');
-    this.pit.wasOpen = open;
-    this.pit.open = open;
     const p = this.player;
     const pit = this.pit;
+    if (pit.cooldown > 0) pit.cooldown = Math.max(0, pit.cooldown - dt);
+    // Why the lane is open: a puncture or a part at 100 % opens it any time (fresh-tyre cooldown or not);
+    // otherwise the window, or the whole of a safety-car period (the cheap stop).
+    const emergency = this.tyre.punctured ? 'puncture' : Math.max(p.parts.wing, p.parts.floor) >= 100 ? 'damage' : null;
+    const scOpen = this.sc.active && this.sc.phase === 'deployed';
+    const reason = emergency || (pit.cooldown > 0 ? null : pitWindowOpen(this.elapsed) ? 'window' : scOpen ? 'sc' : null);
+    const open = reason !== null;
+    pit.reason = reason;
+    pit.left = reason === 'window' ? pitOpenLeft(this.elapsed) : 0;
+    if (open && !pit.wasOpen && !pit.inLane) this.emit('pitOpen', { reason });
+    pit.wasOpen = open;
+    pit.open = open;
+    // the last two seconds of a window tick down, twice a second (the HUD blinks with it)
+    if (reason === 'window' && !pit.inLane && !pit.requested && pit.left <= 2) {
+      const tick = Math.ceil(pit.left / 0.5);
+      if (tick > 0 && tick !== pit.tick) { pit.tick = tick; this.emit('pitWindowTick', { left: tick * 0.5 }); }
+    } else pit.tick = 0;
 
     if (!pit.inLane) {
       // "Box box": a pit request steers the car up to the entry by itself. A confirmed call is
@@ -552,13 +691,17 @@ export class World {
         pit.requested = false;
         pit.phase = 'entry';
         pit.timer = PIT.laneTravel * 0.45;
+        pit.lossPx = 0;
         this.ers.boosting = false;
+        this.breakFlow('pit');
         this.emit('pitIn');
       }
       return;
     }
 
     pit.timer -= dt;
+    // the field keeps going while you are on the limiter: that is what the stop costs
+    pit.lossPx += Math.max(0, this.pitRef - this.speed) * dt;
     if (pit.phase === 'merge') {
       // arc down from the lane onto the top of the track, nose dipping
       const targetY = this.trackTop + PLAYER.height;
@@ -599,7 +742,9 @@ export class World {
           g.hold -= dt;
           if (g.hold <= 0) {
             const s = stopSummary(g.results);
-            this.tyre = { compound: this.nextCompound, wear: 0, punctured: false, temp: 0 };
+            // (the forecast starts from what this compound wears at neutral throttle, then learns how you drive)
+            const base = baseSpeed(this.elapsed);
+            this.tyre = { compound: this.nextCompound, wear: 0, punctured: false, temp: 0, rate: wearDelta(this.nextCompound, base, 1, this.car.tyreWear, base, this.rain) };
             this.cliffAt = null;
             // boxing under the safety car: the weave starts again from these cold tyres when you rejoin
             if (this.sc.neutral) { this.sc.neutral = false; this.sc.weave = null; }
@@ -609,13 +754,18 @@ export class World {
             pit.slow = !s.clean;
             pit.stopFor = s.time;
             if (pit.slow) this.run.slowStops += 1;
-            if (s.record) { this.run.recordStops += 1; this.addScore(PITGAME.recordBonus, 'pit'); this.addPopup(p.x, p.y + 60, `+${PITGAME.recordBonus} RECORD STOP`, '#7df9ff'); }
-            else if (s.clean) { this.run.cleanStops += 1; this.addScore(PITGAME.cleanBonus, 'pit'); this.addPopup(p.x, p.y + 60, `+${PITGAME.cleanBonus} CLEAN STOP`, '#2ecc71'); }
+            if (s.record) { this.run.recordStops += 1; this.addScore(PITGAME.recordBonus, 'pit'); this.addPopup(p.x, p.y + 60, 'RECORD STOP', '#7df9ff', PITGAME.recordBonus); }
+            else if (s.clean) { this.run.cleanStops += 1; this.addScore(PITGAME.cleanBonus, 'pit'); this.addPopup(p.x, p.y + 60, 'CLEAN STOP', '#2ecc71', PITGAME.cleanBonus); }
             if (s.perfects === PITGAME.wheels.length) this.run.perfectStops += 1;
             pit.phase = 'exit';
             pit.timer = PIT.laneTravel * 0.55;
             pit.game = null;
-            this.emit('pitOut', { compound: this.nextCompound, ...s });
+            // what it cost: the lane so far plus the roll down to the blend line, in places
+            const rest = Math.max(0, this.pitRef - SPEED.pitLimit) * (pit.timer + PIT.mergeTime);
+            pit.lossMetres = (pit.lossPx + rest) * WORLD.metresPerPx;
+            pit.placesLost = placesLost(pit.lossMetres);
+            this.position = clampPosition(this.position + pit.placesLost);
+            this.emit('pitOut', { compound: this.nextCompound, ...s, lossMetres: pit.lossMetres, places: pit.placesLost, position: this.position });
           }
         }
         break;
@@ -802,7 +952,9 @@ export class World {
 
     // tyre wear
     if (!inPit && !this.tyre.punctured) {
-      const dWear = wearDelta(this.tyre.compound, this.speed, dt, this.car.tyreWear, base);
+      const dWear = wearDelta(this.tyre.compound, this.speed, dt, this.car.tyreWear, base, this.rain);
+      // the rate the forecast projects with: smoothed, so a lift or a push moves it but does not jerk it
+      if (dt > 0) this.tyre.rate += (dWear / dt - this.tyre.rate) * Math.min(1, dt / TYRES.rateSmoothing);
       this.tyre.wear = Math.min(100, this.tyre.wear + dWear);
       if (this.tyre.wear >= 100) {
         this.tyre.punctured = true;
@@ -1014,7 +1166,9 @@ export class World {
           if (hz.x - hz.w / 2 > p.x + PLAYER.width / 2) {
             hz.fromBehind = false;
             hz.pace = rand(...RIVAL_AI.paceRange);
-            this.emit('passedBy', { driver: hz.driver, team: hz.team, teammate: hz.teammate });
+            // a place gone (not while you sit in the lane: the stop already counted what it cost)
+            if (!this.pit.inLane) this.position = clampPosition(this.position + 1);
+            this.emit('passedBy', { hz, driver: hz.driver, team: hz.team, teammate: hz.teammate, side: hz.y < p.y ? 'left' : 'right', position: this.position });
           }
         } else if (hz.pace) {
           // eases onto its pace (a car that has just gone past you brakes into traffic, it does not teleport)
@@ -1044,17 +1198,29 @@ export class World {
         if (hz.contactCd > 0) hz.contactCd -= dt;
         hz.x += (hz.rel + (hz.contactCd > 0 && hz.shoved ? DAMAGE.shove : 0) - scrollV) * dt;
         if (hz.type === 'rival') {
-          if (hz.weave) {
+          if (hz.weave && hz.commitY === undefined) {
             hz.weavePhase += dt * 1.6;
             hz.y += Math.sin(hz.weavePhase) * 70 * dt;
           }
-          // defenders drift across to cover your lane when you close in (not once you are alongside:
-          // traffic is slow enough now that a car squeezing you for the whole pass would be a wall)
-          if (hz.defend && hz.x - hz.w / 2 > p.x + PLAYER.width / 2 && hz.x - p.x < RIVAL_AI.defendRange) {
-            const dy = p.y - hz.y;
-            hz.y += clamp(dy, -RIVAL_AI.defendSpeed * dt, RIVAL_AI.defendSpeed * dt);
-            hz.brake = 1;
-          } else hz.brake = Math.max(0, hz.brake - dt * 3);
+          // Defenders: at commitRange the car picks the lane it will cover (yours, right then), shows it
+          // for commitTell (rain light + an arrow), then slides there and holds. No homing: once it has
+          // moved, it is your move. It only slides while fully ahead of your nose (never into your side).
+          let sliding = false;
+          if (hz.defend) {
+            const ahead = hz.x - hz.w / 2 > p.x + PLAYER.width / 2;
+            if (hz.commitY === undefined) {
+              if (ahead && hz.x - p.x < RIVAL_AI.commitRange) {
+                hz.commitY = clamp(p.y, this.trackTop + hz.h / 2, this.trackBottom - hz.h / 2);
+                hz.tell = RIVAL_AI.commitTell;
+              }
+            } else if (hz.tell > 0) hz.tell = Math.max(0, hz.tell - dt);
+            else if (ahead && Math.abs(hz.commitY - hz.y) > 0.5) {
+              hz.y += clamp(hz.commitY - hz.y, -RIVAL_AI.defendSpeed * dt, RIVAL_AI.defendSpeed * dt);
+              sliding = true;
+            }
+          }
+          if (sliding) hz.brake = 1;
+          else hz.brake = Math.max(0, hz.brake - dt * 3);
           hz.y = clamp(hz.y, this.trackTop + hz.h / 2, this.trackBottom - hz.h / 2);
           hz.frame = (hz.frame + (scrollV - hz.rel) * dt * 0.02) % 8;
         } else if (hz.type === 'stranded') {
@@ -1138,19 +1304,23 @@ export class World {
       this.run.penalties += 1;
       this.shake = 0.3;
       this.addPopup(p.x, p.y - 50, '5s PENALTY', '#ff3b3b');
+      this.breakFlow('penalty');
       this.emit('penalty');
       return;
     }
     this.overtakes += 1;
+    this.position = clampPosition(this.position - 1);
     let pts = SCORING.overtake;
-    let label = `+${pts}`;
+    let label = 'PASS';
     let color = '#ffd400';
-    if (hz.grid) { pts = START.overtakeBonus; label = `+${pts} START`; color = '#c9ced9'; }
-    if (this.sc.restartTimer > 0) { pts *= SCORING_EXTRA.restartMultiplier; label = `+${pts} RESTART`; color = '#2ecc71'; }
-    if (hz.teammate) { pts += TEAMMATE.bonus; label = `+${pts} MULTI 21`; color = '#e10600'; this.run.teammatePasses += 1; }
-    if (hz.driver?.legend) { pts += LEGEND_BONUS; label = `+${pts} LEGEND`; color = '#d4af37'; this.run.legendPasses = (this.run.legendPasses || 0) + 1; }
+    if (hz.grid) { pts = START.overtakeBonus; label = 'START'; color = '#c9ced9'; }
+    if (this.sc.restartTimer > 0) { pts *= SCORING_EXTRA.restartMultiplier; label = 'RESTART'; color = '#2ecc71'; }
+    if (hz.teammate) { pts += TEAMMATE.bonus; label = 'MULTI 21'; color = '#e10600'; this.run.teammatePasses += 1; }
+    if (hz.driver?.legend) { pts += LEGEND_BONUS; label = 'LEGEND'; color = '#d4af37'; this.run.legendPasses = (this.run.legendPasses || 0) + 1; }
+    // chained moves pay more (grid cars off the line do not build flow: that is just the start)
+    if (!hz.grid) pts = flowPay(pts, this.bumpFlow());
     this.addScore(pts, 'passes');
-    this.addPopup(p.x, p.y - 44, label, color);
+    this.addPopup(p.x, p.y - 44, label, color, pts);
     if (hz.teammate) this.emit('teammate', { count: this.run.teammatePasses, driver: hz.driver });
     else this.emit('overtake', { count: this.overtakes, team: hz.team.name, driver: hz.driver });
   }
@@ -1177,14 +1347,28 @@ export class World {
     }
 
     if (gap > 0) {
-      if (gap < SCORING.closeCallDistance && !hz.nearMiss && (hz.type === 'tyre' || hz.type === 'rival' || hz.type === 'stranded')) {
+      const near = hz.type === 'tyre' || hz.type === 'rival' || hz.type === 'stranded';
+      if (near && gap < SCORING.closeCallDistance && !hz.nearMiss) {
         hz.nearMiss = true;
         this.closeCalls += 1;
         const teammate = hz.type === 'rival' && hz.teammate;
-        const pts = teammate ? SCORING_EXTRA.closeCallTeammate : SCORING.closeCall;
+        const base = teammate ? SCORING_EXTRA.closeCallTeammate : SCORING.closeCall;
+        hz.closeBase = base;
+        const pts = flowPay(base, this.bumpFlow());
         this.addScore(pts, 'close');
-        this.addPopup(hz.x, hz.y - 30, `+${pts}`, teammate ? '#e10600' : '#7df9ff');
-        this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver });
+        this.addPopup(hz.x, hz.y - 30, 'CLOSE', teammate ? '#e10600' : '#7df9ff', pts);
+        this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver, flow: this.flow.mult });
+      }
+      // a scrape: the same close call, but nearer than paint. It pays again (double in all), with a flash and a beat of slow motion
+      if (near && hz.nearMiss && !hz.scraped && gap < FLOW.scrapeGap) {
+        hz.scraped = true;
+        const pts = flowPay(hz.closeBase || SCORING.closeCall, this.flow.mult);
+        this.addScore(pts, 'close');
+        this.addPopup(hz.x, hz.y - 30, 'SCRAPE', '#ffffff', pts);
+        this.slowmo = FLOW.scrapeSlowmo;
+        this.scrapeFlash = 1;
+        this.run.scrapes = (this.run.scrapes || 0) + 1;
+        this.emit('scrape', { driver: hz.driver || null, type: hz.type });
       }
       return;
     }
@@ -1223,6 +1407,7 @@ export class World {
         hz.dead = true;
         // no wing left to take it: the carbon goes under the car
         if (p.parts.wing >= 100) { this.crash(hz, { kind: 'debris', part: 'wing' }); break; }
+        this.breakFlow('contact');
         this.hurt('wing', DAMAGE.wingPerDebris, { driver: null, cause: 'debris', side: 'front' });
         this.shake = 0.5;
         this.spawnSpark(hz.x, hz.y, 10);
@@ -1233,6 +1418,7 @@ export class World {
           p.spin = 0.9;
           this.tyre.wear = Math.min(100, this.tyre.wear + 8);
           this.shake = 0.4;
+          this.breakFlow('oil');
           this.emit('oil');
         }
         break;
@@ -1240,10 +1426,13 @@ export class World {
         if (!hz.taken) {
           hz.taken = true;
           hz.dead = true;
+          // the battery shows what it really got (it may have been nearly full)
+          const before = this.ers.charge;
           this.ers.charge = Math.min(ERS.max, this.ers.charge + ERS.drsRefill * this.car.ers);
-          this.addScore(20, 'other');
-          this.addPopup(hz.x, hz.y - 40, '+20 DRS', '#2ecc71');
-          this.emit('drs');
+          const pts = flowPay(SCORING.drs, this.bumpFlow());
+          this.addScore(pts, 'other');
+          this.addPopup(hz.x, hz.y - 40, 'DRS', '#2ecc71', pts);
+          this.emit('drs', { gain: Math.round(this.ers.charge - before) });
         }
         break;
       default:
@@ -1279,6 +1468,7 @@ export class World {
     }
     this.spawnSpark(p.x + (ahead ? PLAYER.width * 0.45 : -PLAYER.width * 0.3), p.y, 8);
     this.run.contacts += 1;
+    this.breakFlow('contact');
     this.hurt(part, amount, { driver: hz.driver, cause: 'contact', side: sideRub ? 'side' : ahead ? 'front' : 'rear' });
   }
   /** Applies damage to a part and reports it (with `lost` when the part just reached 100). Tough cars take less. */

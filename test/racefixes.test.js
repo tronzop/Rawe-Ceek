@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { World } from '../src/world.js';
 import { carById, CARS } from '../src/cars.js';
-import { PIT, PLAYER, SAFETY_CAR, SC_GAME } from '../src/config.js';
+import { PIT, PLAYER, SAFETY_CAR, SC_GAME, WEATHER } from '../src/config.js';
 import { baseSpeed, pitWindowOpen } from '../src/logic.js';
 
 const DT = 1 / 60;
@@ -191,7 +191,7 @@ test('the planned tyre follows the weather, on the crossing only', () => {
   assert.equal(w.nextCompound, 'medium');
   w.raining = true;
   w.rainTimer = 60;
-  step(w, idle(), 3);
+  step(w, idle(), WEATHER.transition * 0.35 + 0.5);
   assert.notEqual(w.nextCompound, 'medium');
   assert.equal(w.nextCompound, 'inter');
   assert.ok(events.some(([e, p]) => e === 'compound' && p.compound === 'inter'));
@@ -203,7 +203,7 @@ test('the planned tyre follows the weather, on the crossing only', () => {
   w.setNextCompound('wet');
   w.raining = false;
   w.dryTimer = 1e9;
-  step(w, idle(), 5);
+  step(w, idle(), WEATHER.transition * 0.6);
   assert.equal(w.nextCompound, 'medium');
 });
 

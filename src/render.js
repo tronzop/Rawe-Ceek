@@ -1,13 +1,17 @@
 // Canvas renderer. Reads the World and draws the whole scene + HUD.
 // The world is in logical units (height = WORLD.height); `view.scale` maps to device px.
-import { COMPOUNDS, DAMAGE, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SC_GAME, SPEED, START, TYRES, WARN } from './config.js';
-import { clamp, engineState, formatDistance, formatTime, gpProgress, lerp, positionLabel, sweepPos, wheelZones } from './logic.js';
+import { COMPOUNDS, DAMAGE, ERS, FLOW, PIT, PITGAME, PLAYER, SAFETY_CAR_TEAM, SC_GAME, SPEED, START, TYRES, WARN } from './config.js';
+import {
+  FORECAST_LABEL, clamp, engineState, foldY, formatDistance, formatTime, gpProgress, lerp, pointsFor, positionLabel, sweepPos, wheelZones, wrongForWeather,
+} from './logic.js';
 import { drawLivery } from './livery.js';
 
 const FONT = '"Segoe UI", system-ui, Roboto, sans-serif';
 const MONO = '"Cascadia Mono", Consolas, "Roboto Mono", monospace';
 /** Damage card size (top-left, under the score); the radio strip keeps clear of it on narrow screens. */
 const DAMAGE_CARD = { w: 176, h: 58 };
+/** Seconds of a bouncing tyre's path drawn ahead of it (drawTyrePath). */
+const TYRE_PATH = 0.6;
 /** Tutorial tips shown one at a time after the lights, `each` seconds apiece. `[KEY]` draws a keycap. */
 const COACH = {
   each: 3.2,
@@ -73,6 +77,7 @@ export class Renderer {
 
   render(world, hud, dt) {
     this.time += dt;
+    this.dt = dt;
     const { ctx } = this;
     const { width: W, height: H, scale } = this.view;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -119,6 +124,7 @@ export class Renderer {
     if (world.player.grace > 0 && world.cine <= 0.02) this.drawGraceRing(world);
     this.drawPlayer(world);
     if (world.player.alive && Math.max(world.player.parts.wing, world.player.parts.floor) >= 100) this.drawTerminalRing(world);
+    if (world.scrapeFlash > 0 && world.player.alive) this.drawScrapeRim(world);
     // stationary car: mechanics at each wheel + the wheel-gun mini-game (drawn late so nothing paints over it)
     if (world.pit.inLane && world.pit.phase === 'stop' && world.pit.game) this.drawPitGame(world);
     this.drawParticles(world, ['flame', 'spark', 'carbon']);
@@ -693,6 +699,12 @@ export class Renderer {
       ctx.font = `bold 13px ${FONT}`;
       ctx.textAlign = 'center';
       ctx.fillText('▲ PIT ENTRY ▲', px, wallTop + wallH / 2 + 5);
+      // the window draining away, along the bottom of the glow
+      if (world.pit.reason === 'window') {
+        const f = clamp(world.pit.left / PIT.openFor, 0, 1);
+        ctx.fillStyle = world.pit.left <= 2 && Math.sin(this.time * 16) > 0 ? '#ffffff' : '#7ff0b0';
+        ctx.fillRect(px - 140, wallTop + wallH - 3, 280 * f, 3);
+      }
     }
   }
 
@@ -871,6 +883,23 @@ export class Renderer {
     ctx.strokeStyle = `rgba(255,212,0,${0.7 * a * (0.6 + 0.4 * Math.sin(this.time * 10))})`;
     ctx.lineWidth = 3;
     roundRect(ctx, -PLAYER.width / 2 - 8, -PLAYER.height / 2 - 8, PLAYER.width + 16, PLAYER.height + 16, 14);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** A scrape: a bright white rim round the car for a moment (the close call that touched paint). */
+  drawScrapeRim(world) {
+    const { ctx } = this;
+    const p = world.player;
+    const a = world.scrapeFlash;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.tilt + p.angle);
+    ctx.strokeStyle = `rgba(255,255,255,${a})`;
+    ctx.shadowColor = '#fff';
+    ctx.shadowBlur = 14 * a;
+    ctx.lineWidth = 2 + 3 * a;
+    roundRect(ctx, -PLAYER.width / 2 - 5 - 6 * (1 - a), -PLAYER.height / 2 - 5 - 6 * (1 - a), PLAYER.width + 10 + 12 * (1 - a), PLAYER.height + 10 + 12 * (1 - a), 14);
     ctx.stroke();
     ctx.restore();
   }
@@ -1073,7 +1102,23 @@ export class Renderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const exiting = world.pit.phase === 'merge';
-    ctx.fillText(exiting ? 'GO GO GO' : 'BOX BOX', W / 2, H - bar / 2);
+    if (exiting) {
+      // where the stop put you, next to the GO: "GO GO GO  REJOINED P14 (−4)"
+      const lost = world.pit.placesLost;
+      const go = 'GO GO GO   ';
+      const pos = `REJOINED ${positionLabel(world.position)} (${lost ? `−${lost}` : '±0'})`;
+      const big = ctx.font;
+      const gw = ctx.measureText(go).width;
+      ctx.font = `900 ${12 + 4 * a}px ${FONT}`;
+      const pw = ctx.measureText(pos).width;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = lost ? '#ff8a00' : '#2ecc71';
+      ctx.fillText(pos, W / 2 - (gw + pw) / 2 + gw, H - bar / 2);
+      ctx.font = big;
+      ctx.fillStyle = '#ffd400';
+      ctx.fillText(go, W / 2 - (gw + pw) / 2, H - bar / 2);
+      ctx.textAlign = 'center';
+    } else ctx.fillText('BOX BOX', W / 2, H - bar / 2);
     ctx.fillStyle = '#c9ced9';
     ctx.font = `bold 12px ${FONT}`;
     ctx.fillText(exiting ? `${COMPOUNDS[world.tyre.compound].label} fitted · rejoining, tyres cold` : `${COMPOUNDS[world.nextCompound].label} · get ready on the wheel gun`, W / 2, bar / 2);
@@ -1264,10 +1309,14 @@ export class Renderer {
   }
 
   drawWeather(world, W, H) {
-    if (world.rain <= 0.02) return;
+    // the forecast shower announces itself with a few spots of drizzle, thickening as it nears
+    const fc = world.forecast;
+    const drizzle = fc && fc.kind === 'rain' ? 0.08 * clamp(1 - fc.in / 12, 0.25, 1) : 0;
+    const wet = Math.max(world.rain, drizzle);
+    if (wet <= 0.02) return;
     const { ctx } = this;
-    const n = Math.floor(220 * world.rain);
-    ctx.strokeStyle = `rgba(210,228,255,${0.55 * world.rain})`;
+    const n = Math.floor(220 * wet);
+    ctx.strokeStyle = `rgba(210,228,255,${0.55 * Math.max(wet, drizzle ? 0.5 : 0)})`;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     const t = this.time * 900;
@@ -1279,7 +1328,7 @@ export class Renderer {
     }
     ctx.stroke();
     const v = this.vis;
-    ctx.fillStyle = `rgba(90,110,150,${0.16 * world.rain})`;
+    ctx.fillStyle = `rgba(90,110,150,${0.16 * wet})`;
     ctx.fillRect(v.x0, v.y0, v.x1 - v.x0, v.y1 - v.y0);
   }
 
@@ -1303,18 +1352,26 @@ export class Renderer {
     ctx.stroke();
   }
 
+  /** Floating labels. Score popups read "+31 CLOSE", bigger the more they pay, and pop in with a little overshoot. */
   drawPopups(world) {
     const { ctx } = this;
     ctx.textAlign = 'center';
-    ctx.font = `900 18px ${FONT}`;
     for (const pp of world.popups) {
       const a = clamp(1 - pp.age / pp.life, 0, 1);
+      const size = pp.value ? 16 + Math.min(14, pp.value / 10) : 18;
+      const pop = 1 + 0.35 * Math.max(0, 1 - pp.age / 0.15) * Math.sin(Math.min(1, pp.age / 0.15) * Math.PI);
+      const text = pp.value ? `+${pp.value} ${pp.text}` : pp.text;
       ctx.globalAlpha = a;
+      ctx.save();
+      ctx.translate(pp.x, pp.y);
+      ctx.scale(pop, pop);
+      ctx.font = `900 ${Math.round(size)}px ${FONT}`;
       ctx.strokeStyle = 'rgba(0,0,0,0.8)';
       ctx.lineWidth = 4;
-      ctx.strokeText(pp.text, pp.x, pp.y);
+      ctx.strokeText(text, 0, 0);
       ctx.fillStyle = pp.color;
-      ctx.fillText(pp.text, pp.x, pp.y);
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
     }
     ctx.globalAlpha = 1;
   }
@@ -1416,7 +1473,7 @@ export class Renderer {
   drawHazard(hz, world) {
     const { ctx } = this;
     switch (hz.type) {
-      case 'tyre': return this.drawTyre(hz);
+      case 'tyre': return this.drawTyre(hz, world);
       case 'rival': {
         ctx.save();
         ctx.translate(hz.x, hz.y);
@@ -1424,7 +1481,28 @@ export class Renderer {
         ctx.beginPath();
         ctx.ellipse(0, hz.h * 0.45, hz.w * 0.48, 7, 0, 0, Math.PI * 2);
         ctx.fill();
-        drawVectorCar(ctx, hz.w, hz.h, hz.team, hz.frame, { brake: hz.brake > 0, driver: hz.driver });
+        // a defender showing its move: the rain light flashes and an arrow points at the lane it is about to take
+        const telling = hz.tell > 0;
+        drawVectorCar(ctx, hz.w, hz.h, hz.team, hz.frame, { brake: telling ? Math.sin(this.time * 30) > 0 : hz.brake > 0, glow: telling ? 1 : hz.brake, driver: hz.driver });
+        if (telling && hz.commitY !== undefined && Math.abs(hz.commitY - hz.y) > 4) {
+          const dir = Math.sign(hz.commitY - hz.y);
+          const a = 0.6 + 0.4 * Math.sin(this.time * 30);
+          ctx.fillStyle = `rgba(255,59,59,${a})`;
+          ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+          ctx.lineWidth = 2;
+          const ay = dir * (hz.h * 0.6);
+          ctx.beginPath();
+          ctx.moveTo(0, ay + dir * 20);
+          ctx.lineTo(-15, ay);
+          ctx.lineTo(-6, ay);
+          ctx.lineTo(-6, ay - dir * 8);
+          ctx.lineTo(6, ay - dir * 8);
+          ctx.lineTo(6, ay);
+          ctx.lineTo(15, ay);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.fill();
+        }
         if (hz.teammate || hz.driver?.legend) {
           ctx.fillStyle = hz.driver?.legend ? '#d4af37' : '#fff';
           ctx.font = `bold 11px ${FONT}`;
@@ -1523,9 +1601,36 @@ export class Renderer {
     }
   }
 
-  drawTyre(hz) {
+  /**
+   * A loose tyre telegraphs where it is going: a dashed line along the next TYRE_PATH seconds of its
+   * path on screen, folded off the kerbs the way it will bounce, so a bounce never comes as a surprise.
+   */
+  drawTyrePath(hz, world) {
+    if (!hz.bounce || !hz.vy || world.gameOver) return;
+    const { ctx } = this;
+    const lo = world.trackTop + hz.r, hi = world.trackBottom - hz.r;
+    const vx = hz.vx - world.speed;
+    ctx.save();
+    ctx.strokeStyle = hz.compound.color;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 6]);
+    ctx.lineDashOffset = -this.time * 40;
+    ctx.beginPath();
+    const n = 18;
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * TYRE_PATH;
+      const x = hz.x + vx * t, y = foldY(hz.y, hz.vy, t, lo, hi);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawTyre(hz, world) {
     const { ctx } = this;
     const r = hz.r;
+    if (world) this.drawTyrePath(hz, world);
     ctx.save();
     ctx.translate(hz.x, hz.y);
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -1662,6 +1767,22 @@ export class Renderer {
     ctx.fillRect(pad + 66, H - 37, 168, 10);
     ctx.fillStyle = world.ers.boosting ? '#7df9ff' : world.ers.charge > ERS.minToEngage ? '#2ee6a6' : '#666';
     ctx.fillRect(pad + 66, H - 37, 168 * (world.ers.charge / ERS.max), 10);
+    // a DRS gate: the bar flashes cyan and says what the battery actually got
+    if (hud.drs && hud.drs.age < 1.2) {
+      const f = 1 - hud.drs.age / 1.2;
+      ctx.strokeStyle = `rgba(125,249,255,${f})`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(pad + 65, H - 38, 170, 12);
+      ctx.fillStyle = `rgba(125,249,255,${0.35 * f * (Math.sin(this.time * 30) > 0 ? 1 : 0.4)})`;
+      ctx.fillRect(pad + 66, H - 37, 168, 10);
+      ctx.globalAlpha = Math.min(1, f * 1.5);
+      ctx.font = `900 12px ${FONT}`;
+      ctx.fillStyle = '#7df9ff';
+      ctx.textAlign = 'right';
+      ctx.fillText(`DRS +${hud.drs.gain}`, pad + 234, H - 42);
+      ctx.textAlign = 'left';
+      ctx.globalAlpha = 1;
+    }
 
     // tyre widget (bottom-right)
     const tw = 250;
@@ -1702,44 +1823,93 @@ export class Renderer {
     // cliff marker on the wear bar so you can see it coming
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
     ctx.fillRect(tx + 80 + 150 * (1 - TYRES.cliffStart / 100) - 1, H - 80, 2, 14);
+    // the forecast: where the wear will be when the next window you could still use closes, and the verdict
+    const fc = world.racing ? world.wearForecast : null;
+    const FC_COLOR = { makesIt: '#2ecc71', marginal: '#ffd400', wontLast: '#ff3b3b' };
+    if (fc) {
+      const fx = tx + 80 + 150 * (1 - fc.wear / 100);
+      ctx.fillStyle = FC_COLOR[fc.verdict];
+      ctx.beginPath(); ctx.moveTo(fx, H - 81); ctx.lineTo(fx - 4, H - 87); ctx.lineTo(fx + 4, H - 87); ctx.closePath(); ctx.fill();
+      ctx.fillRect(fx - 1, H - 80, 2, 14);
+    }
     ctx.fillStyle = '#c9ced9';
     ctx.font = `12px ${FONT}`;
     ctx.fillText(`grip ${Math.round(world.grip * 100)}%`, tx + 80, H - 58);
+    if (fc) {
+      ctx.textAlign = 'right';
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.fillStyle = FC_COLOR[fc.verdict];
+      ctx.fillText(FORECAST_LABEL[fc.verdict], tx + 230, H - 58);
+      ctx.textAlign = 'left';
+    }
     const nc = COMPOUNDS[world.nextCompound];
     ctx.fillStyle = '#c9ced9';
+    ctx.font = `12px ${FONT}`;
     ctx.fillText('Next stop:', tx + 80, H - 36);
     ctx.fillStyle = nc.color;
     ctx.font = `bold 12px ${FONT}`;
     ctx.fillText(nc.label, tx + 150, H - 36);
+    // a red ✕ when the planned tyre is wrong for the weather that is coming
+    if (wrongForWeather(nc.id, world.expectedRain)) {
+      const xx = tx + 150 + ctx.measureText(nc.label).width + 8;
+      ctx.strokeStyle = '#ff3b3b';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(xx, H - 45); ctx.lineTo(xx + 9, H - 36); ctx.moveTo(xx + 9, H - 45); ctx.lineTo(xx, H - 36); ctx.stroke();
+    }
     ctx.fillStyle = '#8a91a0';
     ctx.font = `11px ${FONT}`;
     ctx.fillText('[1-5 / Tab]', tx + 80, H - 22);
     // pit status: a chip on the card's edge (it used to float over the grass), urgent when the car needs the stop
     const pitIn = world.pitCountdown();
     const needsStop = world.tyre.punctured || cliff || world.damage >= DAMAGE.needsStop
-      || (world.rain > 0.35 && c.wet === undefined) || (world.rain < 0.1 && c.wet !== undefined);
+      || wrongForWeather(c.id, world.rain) || fc?.verdict === 'wontLast';
+    const pit = world.pit;
+    const key = this.touch ? 'BOX' : 'B';
     let pitChip;
-    if (world.pit.inLane) pitChip = [world.pit.phase === 'stop' ? 'IN THE BOX — fire the guns!' : 'PIT LANE', '#ffd400', '#111'];
-    else if (world.pit.open) pitChip = [world.pit.requested ? 'BOXING — copy' : needsStop ? 'PIT OPEN — BOX NOW (B)' : 'PIT OPEN — press B', needsStop && blink ? '#7ff0b0' : '#2ecc71', '#111'];
-    else if (world.pit.cooldown > 0) pitChip = ['fresh tyres — stay out', 'rgba(52,56,66,0.96)', '#c9ced9'];
+    if (pit.inLane) pitChip = [pit.phase === 'stop' ? 'IN THE BOX — fire the guns!' : 'PIT LANE', '#ffd400', '#111'];
+    else if (pit.requested) pitChip = ['BOXING — copy', '#2ecc71', '#111'];
+    else if (pit.reason === 'puncture' || pit.reason === 'damage') pitChip = [`PIT OPEN — ${pit.reason === 'puncture' ? 'PUNCTURE' : 'REPAIRS'} (${key})`, blink ? '#ff3b3b' : '#ff7a7a', '#fff'];
+    else if (pit.reason === 'sc') pitChip = [`SC CHEAP STOP ≈ −${Math.round(world.pitEstimate())} m (${key})`, needsStop && blink ? '#ffe680' : '#ffd400', '#111'];
+    else if (pit.open) {
+      const last = pit.left <= 2;
+      pitChip = [`${needsStop ? 'PIT OPEN — BOX NOW' : 'PIT OPEN'} · ${Math.ceil(pit.left)}s (${key})`, (needsStop || last) && blink ? '#7ff0b0' : '#2ecc71', '#111'];
+    } else if (pit.cooldown > 0) pitChip = ['fresh tyres — stay out', 'rgba(52,56,66,0.96)', '#c9ced9'];
     else pitChip = [`${needsStop ? 'BOX in' : 'pit window in'} ${Math.ceil(pitIn)}s`, needsStop ? 'rgba(255,212,0,0.92)' : 'rgba(52,56,66,0.96)', needsStop ? '#111' : '#c9ced9'];
-    this.drawChip(pitChip[0], tx + tw - 12, H - 118, pitChip[1], pitChip[2], 'right');
+    const chipW = this.drawChip(pitChip[0], tx + tw - 12, H - 118, pitChip[1], pitChip[2], 'right');
+    // the window draining away: a green bar under the chip (blinking white in the last two seconds)
+    if (!pit.inLane && pit.reason === 'window') {
+      const f = clamp(pit.left / PIT.openFor, 0, 1);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(tx + tw - 12 - chipW + 8, H - 105, chipW - 16, 3);
+      ctx.fillStyle = pit.left <= 2 && blink ? '#fff' : '#2ecc71';
+      ctx.fillRect(tx + tw - 12 - chipW + 8, H - 105, (chipW - 16) * f, 3);
+    }
 
     // top strip: score, distance, time, overtakes, weather
     ctx.textAlign = 'left';
     ctx.fillStyle = 'rgba(8,10,16,0.82)';
     roundRect(ctx, pad, pad, 300, 64, 10);
     ctx.fill();
-    ctx.fillStyle = '#fff';
+    // bonus points count up into the score (and it glows yellow while they do) instead of jumping;
+    // distance ticks over as it always did
+    const bonus = world.bonus;
+    if (this.shownWorld !== world || this.shownBonus > bonus) { this.shownWorld = world; this.shownBonus = bonus; }
+    const owed = bonus - this.shownBonus;
+    const fdt = this.dt || 1 / 60;
+    if (owed > 0) { this.scoreGlow = 1; this.shownBonus = Math.min(bonus, this.shownBonus + Math.max(owed * 6, 80) * fdt); }
+    this.scoreGlow = Math.max(0, (this.scoreGlow || 0) - fdt * 2.5);
+    const shown = world.gameOver ? world.score : world.score - bonus + Math.floor(this.shownBonus);
+    ctx.fillStyle = this.scoreGlow > 0 ? lerpColor('#ffffff', '#ffd400', Math.min(1, this.scoreGlow * 1.4)) : '#fff';
     ctx.font = `bold 30px ${MONO}`;
-    ctx.fillText(String(world.score).padStart(6, '0'), pad + 14, pad + 36);
+    ctx.fillText(String(shown).padStart(6, '0'), pad + 14, pad + 36);
+    this.drawFlow(world, pad + 132, pad + 10);
     ctx.font = `12px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
     ctx.fillText(`${formatDistance(world.distance)}   ·   ${formatTime(world.elapsed)}   ·   best ${hud.best}`, pad + 14, pad + 54);
     ctx.textAlign = 'right';
     ctx.fillStyle = '#fff';
     ctx.font = `bold 16px ${FONT}`;
-    ctx.fillText(positionLabel(world.overtakes), pad + 286, pad + 26);
+    ctx.fillText(positionLabel(world.position), pad + 286, pad + 26);
     ctx.font = `11px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
     ctx.fillText(`${world.overtakes} overtakes`, pad + 286, pad + 42);
@@ -1757,15 +1927,32 @@ export class Renderer {
     ctx.fillText(`${world.venue.flag} ${world.venue.name}`, vx + 12, pad + 24);
     ctx.font = `11px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
-    ctx.fillText(`Round ${world.gps + 1}  ·  ${hud.points ?? 0} pts`, vx + 12, pad + 40);
+    // live: what the current position would pay at the flag
+    const roundTxt = `Round ${world.gps + 1}  ·  `;
+    ctx.fillText(roundTxt, vx + 12, pad + 40);
+    const pts = pointsFor(world.position);
+    ctx.font = `bold 11px ${FONT}`;
+    ctx.fillStyle = pts > 0 ? '#ffd400' : '#8a91a0';
+    ctx.fillText(`${positionLabel(world.position)} → ${pts} pts`, vx + 12 + ctx.measureText(roundTxt).width, pad + 40);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(vx + 12, pad + 48, vw - 24, 6);
     ctx.fillStyle = '#ffd400';
     ctx.fillRect(vx + 12, pad + 48, (vw - 24) * gpProgress(world.distance), 6);
     ctx.textAlign = 'right';
     ctx.font = `bold 13px ${FONT}`;
-    ctx.fillStyle = world.raining ? '#7fb2ff' : '#ffd400';
-    ctx.fillText(world.raining ? '🌧 RAIN' : world.rain > 0.1 ? '☁ DRYING' : world.night > 0.5 ? '🌙 NIGHT' : '☀ DRY', vx + vw - 12, pad + 24);
+    // the radar: rain (or the end of it) counted down before it arrives
+    const wf = world.forecast;
+    const fcBlink = Math.sin(this.time * 7) > -0.2;
+    if (wf && wf.kind === 'rain') {
+      ctx.fillStyle = fcBlink ? '#7fb2ff' : '#c9d9ff';
+      ctx.fillText(`🌧 RAIN IN ${Math.ceil(wf.in)}s`, vx + vw - 12, pad + 24);
+    } else if (wf && wf.kind === 'dry') {
+      ctx.fillStyle = fcBlink ? '#ffd400' : '#fff0a0';
+      ctx.fillText(`☀ DRYING IN ${Math.ceil(wf.in)}s`, vx + vw - 12, pad + 24);
+    } else {
+      ctx.fillStyle = world.raining ? '#7fb2ff' : '#ffd400';
+      ctx.fillText(world.raining ? (world.rainPeak < 1 ? '🌦 DAMP' : '🌧 RAIN') : world.rain > 0.1 ? '☁ DRYING' : world.night > 0.5 ? '🌙 NIGHT' : '☀ DRY', vx + vw - 12, pad + 24);
+    }
     ctx.fillStyle = hud.musicOn ? '#c9ced9' : '#666';
     ctx.font = `11px ${FONT}`;
     ctx.fillText(hud.musicOn ? '♪ on (M)' : '♪ off (M)', vx + vw - 12, pad + 40);
@@ -2128,6 +2315,42 @@ export class Renderer {
     });
   }
 
+  /**
+   * The flow badge in the score card: the multiplier on a pill whose colour climbs with the tier,
+   * with the window draining along its bottom edge. Hidden at ×1.
+   */
+  drawFlow(world, x, y) {
+    const f = world.flow;
+    if (!f || f.mult <= 1) return;
+    const { ctx } = this;
+    const label = `FLOW ×${f.mult % 1 ? f.mult.toFixed(2).replace(/0$/, '') : f.mult}`;
+    ctx.font = `900 12px ${FONT}`;
+    const w = Math.ceil(ctx.measureText(label).width) + 18, h = 24;
+    const colors = ['#7df9ff', '#7df9ff', '#2ecc71', '#ffd400', '#ff8a00'];
+    const col = colors[Math.min(colors.length - 1, f.tier)];
+    const fade = clamp(f.timer / 0.6, 0, 1); // fades out over the last moment of the window
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.65 * fade;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    roundRect(ctx, x, y, w, h, 12);
+    ctx.fill();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y, w, h, 12);
+    ctx.stroke();
+    // the window, draining
+    ctx.fillStyle = col;
+    ctx.fillRect(x + 10, y + h - 4, (w - 20) * clamp(f.timer / FLOW.window, 0, 1), 2);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 12px ${FONT}`;
+    ctx.fillStyle = col;
+    ctx.fillText(label, x + w / 2, y + h / 2 - 1);
+    ctx.restore();
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+  }
+
   /** Small status pill centred on y, growing left or right from x. */
   drawChip(text, x, y, bg, fg = '#111', align = 'left') {
     const { ctx } = this;
@@ -2142,6 +2365,7 @@ export class Renderer {
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x0 + 10, y + 1);
     ctx.textBaseline = 'alphabetic';
+    return w;
   }
 }
 
@@ -2266,10 +2490,21 @@ export function drawVectorCar(ctx, w, h, team, frame = 0, opts = {}) {
   }
   // front wing
   ctx.fillRect(hw * 0.55, wy + wr * 0.35, w * 0.22, h * 0.12);
-  // brake / rain light
+  // brake / rain light: big enough to read at a glance, with a glow while it is lit
+  const glow = opts.glow ?? (opts.brake ? 1 : 0);
+  if (glow > 0.05) {
+    const gx = -hw * 0.96, gy = wy - wr * 0.05;
+    const g = ctx.createRadialGradient(gx, gy, 1, gx, gy, h * 0.55);
+    g.addColorStop(0, `rgba(255,40,40,${0.55 * glow})`);
+    g.addColorStop(1, 'rgba(255,40,40,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(gx, gy, h * 0.55, 0, Math.PI * 2); ctx.fill();
+  }
   if (opts.brake) {
     ctx.fillStyle = '#ff2a2a';
-    ctx.fillRect(-hw * 0.96, wy - wr * 0.1, 4, wr * 0.5);
+    ctx.fillRect(-hw * 0.98, wy - wr * 0.3, 7, wr * 0.75);
+    ctx.fillStyle = '#ffd0d0';
+    ctx.fillRect(-hw * 0.98 + 2, wy - wr * 0.18, 3, wr * 0.4);
   }
   // wheels on top so they read as wheels
   for (const wx of wheels) {

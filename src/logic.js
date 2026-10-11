@@ -1,6 +1,6 @@
 // Pure gameplay maths. No DOM, no canvas, no side effects — this module is
 // unit-tested under Node (see test/logic.test.js) and shared by the world sim.
-import { COMPOUNDS, ERS, PIT, SC_GAME, SPAWN, SPEED, TYRES } from './config.js';
+import { COMPOUNDS, ERS, FLOW, PIT, SC_GAME, SPAWN, SPEED, TYRES, WORLD } from './config.js';
 
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
@@ -25,10 +25,27 @@ export function gripFactor(compoundId, wear, rain) {
     g *= lerp(1, TYRES.gripAtCliff, clamp(t, 0, 1));
   }
   // weather suitability: dry tyres hate water, wets hate a dry track
-  const wetness = clamp(rain, 0, 1);
-  const suitability = c.wet === undefined ? 1 - wetness : 1 - Math.abs(c.wet - wetness);
-  g *= lerp(TYRES.wrongWeatherGrip, 1, clamp(suitability, 0, 1));
+  g *= lerp(TYRES.wrongWeatherGrip, 1, suitability(compoundId, rain));
   return g;
+}
+/**
+ * How well a compound suits a track this wet, 0..1 (see TYRES.suit). Slicks fall off above a
+ * damp track, inters own the middle, full wets win once it is properly wet: at 0 / 0.5 / 0.9
+ * wetness the best tyre is a slick / an inter / a wet (the same answer as bestCompound).
+ */
+export function suitability(compoundId, rain) {
+  const c = COMPOUNDS[compoundId];
+  const w = clamp(rain, 0, 1);
+  const S = TYRES.suit;
+  // 1 at `full`, 0 at `zero`, linear between (either way round)
+  const ramp = (full, zero) => clamp((w - zero) / (full - zero), 0, 1);
+  if (c.wet === undefined) return ramp(S.slick.full, S.slick.zero);
+  if (c.wet < 1) {
+    if (w < S.inter.lo) return lerp(S.inter.dry, 1, w / S.inter.lo);
+    if (w > S.inter.hi) return lerp(1, S.inter.flooded, (w - S.inter.hi) / (1 - S.inter.hi));
+    return 1;
+  }
+  return ramp(S.wet.full, S.wet.zero);
 }
 
 /**
@@ -36,10 +53,12 @@ export function gripFactor(compoundId, wear, rain) {
  * `refSpeed` is what counts as neutral (the world passes the current base speed), so pushing
  * costs rubber but merely surviving longer does not.
  */
-export function wearDelta(compoundId, speed, dt, wearMul = 1, refSpeed = SPEED.base) {
+export function wearDelta(compoundId, speed, dt, wearMul = 1, refSpeed = SPEED.base, rain = null) {
   const c = COMPOUNDS[compoundId];
   const ratio = speed / refSpeed;
-  return ratio * ratio * c.wearRate * TYRES.wearPerSecond * wearMul * dt;
+  // inters and wets on a dry track (`rain` given and below TYRES.dryBelow) cook themselves
+  const dry = rain !== null && rain < TYRES.dryBelow && c.dryWear ? c.dryWear : 1;
+  return ratio * ratio * c.wearRate * TYRES.wearPerSecond * wearMul * dry * dt;
 }
 
 /**
@@ -89,6 +108,32 @@ export function nextPitWindowIn(elapsed) {
   const phase = (elapsed - PIT.firstWindowAt) % PIT.interval;
   return phase < PIT.openFor ? 0 : PIT.interval - phase;
 }
+/** Seconds left before the open pit window closes (0 when it is closed). */
+export function pitOpenLeft(elapsed) {
+  if (elapsed < PIT.firstWindowAt) return 0;
+  const phase = (elapsed - PIT.firstWindowAt) % PIT.interval;
+  return phase < PIT.openFor ? PIT.openFor - phase : 0;
+}
+/**
+ * How long the current tyres have to last if you do not box now: to the end of the next window
+ * after this one when a window is open (skip it and that is your next chance), else to the end of
+ * the coming window.
+ */
+export function forecastHorizon(elapsed) {
+  const left = pitOpenLeft(elapsed);
+  return left > 0 ? left + PIT.interval : nextPitWindowIn(elapsed) + PIT.openFor;
+}
+/**
+ * Wear forecast for the tyre card: where `wear` (0..100) will be after `horizon` seconds at `rate`
+ * %/s, and the verdict: MAKES IT (still before the cliff), MARGINAL (over the cliff but no
+ * puncture) or WON'T LAST (it will go before you can box).
+ */
+export function wearForecast(wear, rate, horizon) {
+  const at = wear + Math.max(0, rate) * Math.max(0, horizon);
+  const verdict = at >= 100 ? 'wontLast' : at > TYRES.cliffStart ? 'marginal' : 'makesIt';
+  return { wear: Math.min(100, at), verdict };
+}
+export const FORECAST_LABEL = { makesIt: 'MAKES IT', marginal: 'MARGINAL', wontLast: "WON'T LAST" };
 
 // ----- car-shaped hitboxes -----
 import { HITBOX } from './config.js';
@@ -308,9 +353,39 @@ export function tempGrip(temp) {
   return lerp(TYRE_TEMP.coldGrip, 1, clamp(temp, 0, 1));
 }
 
-/** Position label for the HUD from overtakes (starts P20, can't go past P1). */
-export function positionLabel(overtakes) {
-  return `P${Math.max(1, 20 - overtakes)}`;
+/** Position label for the HUD (World.position, held between P1 and the back of the field). */
+export function positionLabel(position) {
+  return `P${clampPosition(position)}`;
+}
+export const clampPosition = (position) => clamp(Math.round(position), 1, GP.fieldSize);
+/** Championship points for finishing a Grand Prix in `position` (F1's 25-18-15-…-1 for the top ten). */
+export function pointsFor(position) {
+  return GP.points[clampPosition(position) - 1] || 0;
+}
+/**
+ * Track a pit stop gives away against the field (metres): the lane at the pit limiter while they run
+ * at `refSpeed`, plus `stopSeconds` stationary. `laneSeconds` is the time spent rolling in the lane.
+ */
+export function pitLossMetres(refSpeed, stopSeconds, laneSeconds = PIT.laneTravel + PIT.mergeTime) {
+  return (Math.max(0, refSpeed - SPEED.pitLimit) * laneSeconds + Math.max(0, refSpeed) * stopSeconds) * WORLD.metresPerPx;
+}
+/** Places a loss of `metres` costs (one per GP.placeGapMetres, rounded). */
+export function placesLost(metres) {
+  return Math.max(0, Math.round(metres / GP.placeGapMetres));
+}
+
+// ----- flow -----
+/** The flow multiplier after one more chained move (capped at FLOW.max). */
+export function flowStep(mult) {
+  return Math.min(FLOW.max, mult + FLOW.step);
+}
+/** Points a move worth `base` pays at multiplier `mult` (whole points). */
+export function flowPay(base, mult) {
+  return Math.round(base * mult);
+}
+/** Flow tier for the HUD and the audio: 0 below ×1.5, then one per half (×1.5, ×2, ×2.5, ×3 → 1..4). */
+export function flowTier(mult) {
+  return Math.max(0, Math.floor((mult - 1) / 0.5 + 1e-9));
 }
 
 // ---------------------------------------------------------------------------

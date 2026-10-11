@@ -25,6 +25,7 @@ export const TROPHIES = [
   { id: 'pitcrew', name: 'Pit crew of the year', desc: 'Four perfect wheel guns in one stop.', check: (c, r) => r.perfectStops >= 1 },
   { id: 'marathon', name: 'Rawe Ceek every week', desc: 'Drive 50 km over your career.', check: (c) => c.metres >= 50000 },
   { id: 'sillyseason', name: 'Silly season', desc: 'Race for five different teams.', check: (c) => (c.cars || []).length >= 5 },
+  { id: 'flow3', name: 'Flow ×3', desc: 'Chain close calls, overtakes and DRS gates to the full ×3 flow multiplier.', check: (c, r) => (r.flowMax || 1) >= 3 },
   { id: 'tifosi', name: 'Tifosi', desc: 'Complete a Grand Prix in the Ferrari.', check: (c, r) => r.gps >= 1 && r.car === 'ferrari' },
 ];
 
@@ -38,6 +39,7 @@ export const EMPTY_RUN = () => ({
   penalties: 0, teammatePasses: 0, legendPasses: 0, towEnergy: 0, overtakes: 0, score: 0, metres: 0,
   recordStops: 0, cleanStops: 0, perfectStops: 0, contacts: 0, repairs: 0, greatStarts: 0, car: '',
   scWeaves: 0, warmRestarts: 0, scJumps: 0,
+  points: 0, bestFinish: 0, flowMax: 1, scrapes: 0, // F1 points by finishing position, best finish (0 = none yet), flow, scrapes
 });
 
 const load = () => {
@@ -45,15 +47,15 @@ const load = () => {
 };
 const save = (c) => { try { localStorage.setItem(STORAGE_KEYS.career, JSON.stringify(c)); } catch { /* ignore */ } };
 
-/** Folds a finished run into the career totals (pure). */
-export function applyRun(career, run, gpPoints) {
+/** Folds a finished run into the career totals (pure). Championship points are what the run scored by position (run.points). */
+export function applyRun(career, run) {
   return {
     ...career,
     races: career.races + 1,
     metres: career.metres + Math.floor(run.metres),
     overtakes: career.overtakes + run.overtakes,
     gps: career.gps + run.gps,
-    points: career.points + run.gps * gpPoints,
+    points: career.points + (run.points || 0),
     slowStops: career.slowStops + run.slowStops,
     penalties: career.penalties + run.penalties,
     cars: run.car ? [...new Set([...(career.cars || []), run.car])] : career.cars || [],
@@ -69,8 +71,8 @@ export function evaluateTrophies(career, run) {
 export const Career = {
   load,
   /** Records a finished run; returns { career, unlocked: Trophy[] }. */
-  record(run, gpPoints) {
-    const next = applyRun(load(), run, gpPoints);
+  record(run) {
+    const next = applyRun(load(), run);
     const unlocked = evaluateTrophies(next, run);
     next.trophies = [...next.trophies, ...unlocked];
     save(next);

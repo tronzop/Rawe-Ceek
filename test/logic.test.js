@@ -157,19 +157,21 @@ test('tyre temperature: cold rubber grips less, full temp is neutral', () => {
 });
 
 test('position label', () => {
-  assert.equal(logic.positionLabel(0), 'P20');
-  assert.equal(logic.positionLabel(19), 'P1');
-  assert.equal(logic.positionLabel(40), 'P1');
+  assert.equal(logic.positionLabel(13), 'P13');
+  assert.equal(logic.positionLabel(1), 'P1');
+  assert.equal(logic.positionLabel(-4), 'P1');
+  assert.equal(logic.positionLabel(40), `P${config.GP.fieldSize}`);
 });
 
 test('career: runs fold into totals and unlock trophies exactly once', () => {
   const { GP } = config;
   let career = EMPTY_CAREER();
-  const run = { ...EMPTY_RUN(), metres: 3200, gps: 2, overtakes: 4, slowStops: 1, punctures: 1, score: 3500 };
-  career = applyRun(career, run, GP.points);
+  // two Grands Prix: P1 and P7 at the flags
+  const run = { ...EMPTY_RUN(), metres: 3200, gps: 2, overtakes: 4, slowStops: 1, punctures: 1, score: 3500, points: GP.points[0] + GP.points[6] };
+  career = applyRun(career, run);
   assert.equal(career.races, 1);
   assert.equal(career.gps, 2);
-  assert.equal(career.points, 2 * GP.points);
+  assert.equal(career.points, 31);
   assert.equal(career.metres, 3200);
   const unlocked = evaluateTrophies(career, run);
   assert.ok(unlocked.includes('lightsout'));
