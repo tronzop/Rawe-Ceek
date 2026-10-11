@@ -73,11 +73,36 @@ alonso01`.
 Liveries, helmets, numbers and radio quips live in `src/grid.js` — add a driver
 there and they appear on track immediately.
 
+## SFX (licensed)
+
+`assets/sfx/` holds short recordings that replace a synthesised cue when present.
+They play as sound effects (never on the radio channel), and if a file is
+missing the synth version plays instead, so every file here is optional.
+
+Shipped:
+
+| File | Plays on | Source | Author | Licence | What was changed |
+| --- | --- | --- | --- | --- | --- |
+| `chequered_crowd.ogg` | chequered flag, under the *get in there* / *simply lovely* clip | ["F1 Race Crowd Applause Air Horns"](https://commons.wikimedia.org/wiki/File:F1-Race-Crowd-Applause-Air-Horns.wav) (originally [freesound #200809](https://freesound.org/people/WebbFilmsUK/sounds/200809/)) | WebbFilmsUK | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Trimmed to 9.5 s (4.2–13.7 s of the original: the crowd and air horns, no PA voice), raised 5.5 dB, 0.6 s fade-in and 1.5 s fade-out, re-encoded as Ogg Vorbis |
+| `record_cheer.ogg` | record pit stop (under 2.0 s) | ["Clapping hurray.ogg"](https://commons.wikimedia.org/wiki/File:Clapping_hurray.ogg) | starlite | Public domain | Trimmed to 2 s (1.0–3.0 s of the original), lowered 4 dB, faded in and out, re-encoded as mono Ogg Vorbis |
+
+Optional, not shipped. Both are CC0 on freesound, which needs a login, so
+download them yourself and save them under these exact names:
+
+| File | Plays on | Source | Suggested edit |
+| --- | --- | --- | --- |
+| `wheelgun.ogg` | each wheel-gun hit in the pit-stop mini-game (the game pitches it up 4 semitones and trims it to 0.3 s) | ["1 Inch Impact Gun"](https://freesound.org/people/dudebrobrodude/sounds/466716/) by dudebrobrodude, CC0 | Trim to one burst of about 0.3–0.5 s |
+| `radio_ping.ogg` | the open tone at the start of a pit-wall voice clip | ["Formula 1 radio"](https://freesound.org/people/Fenrir21/sounds/825219/) by Fenrir21, CC0 | Use as is; the game plays the first 0.4 s |
+
+The `mp3`, `wav` and `m4a` formats work too, as long as the file name is the same.
+No FOM broadcast audio, F1 theme or real team radio is used anywhere in the game.
+
 ## Real engine sound (optional)
 
-The engine is synthesised: a procedural V12 whose firing frequency follows the
-revs through an eight-speed box, with exhaust formants, soft clipping, intake
-hiss and an ignition cut on upshifts. If you have recordings of a real V12 you
+The engine is synthesised: a procedural 1.6 L V6 turbo-hybrid whose firing
+frequency (rpm / 60 × 3) follows the revs through an eight-speed box, with exhaust
+formants, soft clipping, intake hiss, a turbo whistle and an ignition cut on
+upshifts. If you have recordings of a real engine you
 are allowed to use, drop two seamless loops into `assets/engine/` and the game
 switches to them automatically, pitch-tracking and crossfading by rpm:
 

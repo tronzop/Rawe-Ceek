@@ -183,7 +183,7 @@ const server = http.createServer((req, res) => {
   serveStatic(req, res);
 });
 
-/** Filenames present in assets/clips and assets/drivers (audio / image types only). */
+/** Filenames present in assets/clips, drivers, engine and sfx (audio / image types only). */
 export function listAssets() {
   const list = (dir, exts) => {
     try {
@@ -191,7 +191,7 @@ export function listAssets() {
     } catch { return []; }
   };
   const audio = ['.mp3', '.ogg', '.wav', '.m4a'];
-  return { clips: list('clips', audio), drivers: list('drivers', ['.png', '.jpg', '.jpeg', '.webp', '.gif']), engine: list('engine', audio) };
+  return { clips: list('clips', audio), drivers: list('drivers', ['.png', '.jpg', '.jpeg', '.webp', '.gif']), engine: list('engine', audio), sfx: list('sfx', audio) };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

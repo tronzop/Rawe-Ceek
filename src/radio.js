@@ -64,6 +64,8 @@ const LINES = {
   thunder: ['Lightning. Keep it on the island.', 'It is a monsoon out there.', 'Full wets? We are checking the radar.'],
   coldTyres: ['Tyres are cold, careful in the first corners.', 'Warm up the tyres. Weave a bit.', 'The tyres are like ice. Careful.'],
   night: ['Lights on. Sparkly.', 'Night race. The car looks fantastic under the lights.'],
+  // the first car closing from behind in a run (the mirror chevron)
+  carBehind: ['Car behind. Car behind.', 'Car behind, quicker. Do not fight him.', 'Mirrors. Car behind, closing fast.', 'Car behind. Let him go, we race the others.'],
 };
 
 // Events whose line group depends on what is actually happening in the car.

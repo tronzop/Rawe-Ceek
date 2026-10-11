@@ -31,6 +31,7 @@ export const TROPHIES = [
 
 export const EMPTY_CAREER = () => ({
   races: 0, metres: 0, overtakes: 0, gps: 0, points: 0, slowStops: 0, penalties: 0, trophies: [], cars: [],
+  bestReaction: 0, // fastest launch off the lights in seconds (0 = none yet; jump starts never count)
 });
 
 /** Fresh per-run counters the world fills in. */
@@ -40,6 +41,7 @@ export const EMPTY_RUN = () => ({
   recordStops: 0, cleanStops: 0, perfectStops: 0, contacts: 0, repairs: 0, greatStarts: 0, car: '',
   scWeaves: 0, warmRestarts: 0, scJumps: 0,
   points: 0, bestFinish: 0, flowMax: 1, scrapes: 0, // F1 points by finishing position, best finish (0 = none yet), flow, scrapes
+  reaction: 0, // s from lights out to the throttle (0 = jumped or never pressed)
 });
 
 const load = () => {
@@ -59,7 +61,15 @@ export function applyRun(career, run) {
     slowStops: career.slowStops + run.slowStops,
     penalties: career.penalties + run.penalties,
     cars: run.car ? [...new Set([...(career.cars || []), run.car])] : career.cars || [],
+    bestReaction: bestReaction(career.bestReaction, run.reaction),
   };
+}
+
+/** The quicker of two reaction times, where 0 / missing means "none". */
+export function bestReaction(a, b) {
+  const ok = (v) => typeof v === 'number' && v > 0;
+  if (!ok(a)) return ok(b) ? b : 0;
+  return ok(b) ? Math.min(a, b) : a;
 }
 
 /** Returns the ids of trophies newly unlocked by this run (pure). */

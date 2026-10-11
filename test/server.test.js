@@ -85,3 +85,15 @@ test('HTTP: concurrent POSTs both persist; absurd scores are rejected', async ()
   const res = await fetch(`${base}/api/leaderboard`, { method: 'POST', body: 'null' });
   assert.equal(res.status, 400);
 });
+
+test('the licensed SFX are listed by /api/assets and served as audio/ogg', async () => {
+  const a = await (await fetch(`${base}/api/assets`)).json();
+  assert.ok(Array.isArray(a.sfx));
+  for (const f of ['chequered_crowd.ogg', 'record_cheer.ogg']) {
+    assert.ok(a.sfx.includes(f), `${f} listed`);
+    const res = await fetch(`${base}/assets/sfx/${f}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'audio/ogg');
+    await res.arrayBuffer();
+  }
+});

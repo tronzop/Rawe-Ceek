@@ -66,17 +66,19 @@ test('audio: every cue main.js uses still exists, plus the new F1 cues', async (
   const { AudioEngine } = await import('../src/audio.js');
   const names = [
     // called by main.js today
-    'init', 'resume', 'suspend', 'fadeOutMusic', 'crashNoise', 'radioClick', 'play', 'duration', 'playAny', 'skid', 'overtake',
-    'blip', 'startMusic', 'crunch', 'drs', 'wheelGun', 'fanfare', 'siren', 'scEnding', 'penalty', 'thunder', 'toggleMusic',
+    'init', 'resume', 'suspend', 'fadeOutMusic', 'radioClick', 'play', 'duration', 'playAny', 'skid', 'overtake',
+    'blip', 'startMusic', 'crunch', 'wheelGun', 'fanfare', 'scEnding', 'penalty', 'thunder', 'toggleMusic',
     'toggleSfx', 'setTrack', 'toggleTrack', 'setAvailable', 'updateEngine', 'setMusicState', 'updateTow', 'updateRain',
     'updateErs', 'updatePuncture',
     // new
     'playSfx', 'stopClips', 'crash', 'goodChime', 'drsOpen', 'gridAmbience', 'launch', 'lightTick', 'jumpStartTone', 'passBy',
     'closeWhoosh', 'flowTierUp', 'mirrorBlip', 'pitLimiter', 'jackClank', 'jacksDown', 'gunStall', 'pitRelease', 'scAlert',
     'scCarBurble', 'scLightsOff', 'fieldRevSurge', 'updateScrape', 'chequeredCrowd', 'recordStopCheer', 'squelchTail',
-    'noiseBurst', 'tone', 'sweep',
+    'noiseBurst', 'tone', 'sweep', 'scrapeGrain', 'setGridRevs', 'stopLoops',
   ];
   for (const n of names) assert.equal(typeof AudioEngine.prototype[n], 'function', `AudioEngine.${n}`);
+  // the legacy aliases are gone now nothing calls them
+  for (const n of ['siren', 'drs', 'crashNoise']) assert.equal(AudioEngine.prototype[n], undefined, `AudioEngine.${n} removed`);
 });
 
 test('audio: every cue builds against a stub graph without throwing', async () => {
@@ -91,8 +93,8 @@ test('audio: every cue builds against a stub graph without throwing', async () =
   for (let i = 0; i < 30; i++) { a.updateEngine(1 / 60, 0.04, true, 0.2, false); tick(); }
   assert.ok(Math.abs(a.engine.rpm - (6000 - 4000) / 8000) < 0.05, 'the limiter holds 6000 rpm');
   a.pitRelease();
-  for (const f of ['lightTick', 'jumpStartTone', 'launch', 'mirrorBlip', 'jackClank', 'jacksDown', 'gunStall', 'scAlert', 'siren',
-    'scLightsOff', 'fieldRevSurge', 'drsOpen', 'goodChime', 'drs', 'overtake', 'penalty', 'scEnding', 'fanfare', 'chequeredCrowd',
+  for (const f of ['lightTick', 'jumpStartTone', 'launch', 'mirrorBlip', 'jackClank', 'jacksDown', 'gunStall', 'scAlert', 'scrapeGrain',
+    'scLightsOff', 'fieldRevSurge', 'drsOpen', 'goodChime', 'overtake', 'penalty', 'scEnding', 'fanfare', 'chequeredCrowd',
     'recordStopCheer', 'thunder', 'radioClick', 'squelchTail', 'skid', 'crunch']) {
     a[f](); tick(0.3);
   }
@@ -135,4 +137,50 @@ test('audio: a paused context stays paused; anything else not running is resumed
   a.ctx.state = 'interrupted'; // iOS
   a.init();
   assert.equal(a.ctx.state, 'running');
+});
+
+test('audio: every audio.<cue>() main.js calls exists on AudioEngine', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { AudioEngine } = await import('../src/audio.js');
+  const src = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  const called = new Set([...src.matchAll(/\baudio\.([a-zA-Z]+)\(/g)].map((m) => m[1]));
+  assert.ok(called.size > 20);
+  for (const n of called) assert.equal(typeof AudioEngine.prototype[n], 'function', `main.js calls audio.${n}()`);
+});
+
+test('audio: grid revs bounce around 10,000 rpm and climb with the throttle; stopLoops hands back', async () => {
+  const a = await engineWithStubs();
+  const ctx = a.ctx;
+  const run = (held, n = 90) => {
+    let lo = 9, hi = -9;
+    for (let i = 0; i < n; i++) { a.setGridRevs(true, held); a.updateEngine(1 / 60, 0, true, 0.5, false); ctx.currentTime += 1 / 60; if (i > 30) { lo = Math.min(lo, a.engine.rpm); hi = Math.max(hi, a.engine.rpm); } }
+    return { lo, hi };
+  };
+  const idle = run(false);
+  assert.ok(idle.lo > 0.65 && idle.hi < 0.85, `bounces around 0.75 (${idle.lo.toFixed(2)}..${idle.hi.toFixed(2)})`);
+  assert.ok(idle.hi - idle.lo > 0.04, 'it actually bounces');
+  const held = run(true);
+  assert.ok((held.lo + held.hi) / 2 > (idle.lo + idle.hi) / 2 + 0.05, 'holding → revs it higher');
+  a.gridAmbience(1);
+  a.scCarBurble(true);
+  a.pitLimiter(true);
+  a.stopLoops();
+  assert.equal(a.engine.grid, null);
+  assert.equal(a.grid, null, 'grid bed gone');
+  assert.equal(a.engine.limiter, false);
+  assert.equal(a.scNode.g.gain.value, 0, 'safety car burble silenced');
+  for (let i = 0; i < 120; i++) { a.updateEngine(1 / 60, 0, true, 0, false); ctx.currentTime += 1 / 60; }
+  assert.ok(a.engine.rpm < 0.05, 'back on the speedo: true idle at a standstill (the box)');
+});
+
+test('audio: the limiter can switch silently (box idle, roll-out) and beeps only on pit entry', async () => {
+  const a = await engineWithStubs();
+  a.voices.length = 0;
+  a.pitLimiter(true, { beep: false });
+  assert.equal(a.voices.length, 0, 'silent switch opens no voice');
+  a.pitLimiter(false, { beep: false });
+  a.pitLimiter(true);
+  assert.equal(a.voices.length, 1, 'dash beep on entry');
+  a.pitLimiter(true);
+  assert.equal(a.voices.length, 1, 'no second beep while already on');
 });

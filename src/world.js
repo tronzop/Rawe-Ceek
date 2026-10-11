@@ -15,6 +15,11 @@
 //  - 'forecast'      { kind: 'rain'|'dry', in, peak?, best? }  the radar: rain in `in` s (peak 1 heavy, WEATHER.damp light), or the end of it
 //  - 'rainStart'     { peak, best }
 //  - 'chequered'     adds { position, points } (F1 points by position)
+// Sound hooks:
+//  - 'reaction'      { reaction, jumped, great }  the launch was measured (s from lights out); also in run.reaction
+//  - 'closeCall' / 'teammateClose' / 'scrape' add { side: 'up'|'down' }  where the other car went by (up = your left)
+//  - 'overtake' / 'teammate' / 'passedBy' add { closing, grid? }  closing speed in m/s (the Doppler), grid = a car off the line
+//  - World.scrape    0..1, the damaged wing or floor dragging on the tarmac this frame
 import {
   COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, FLOW, GP, HITBOX, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SC_GAME, SCORING, SCORING_EXTRA, SLIPSTREAM,
   SPAWN, SPEED, START, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WARN, WEATHER, WORLD,
@@ -113,6 +118,7 @@ export class World {
     this.flow = { mult: 1, timer: 0, tier: 0 };
     this.slowmo = 0; // s of scrape slow motion left
     this.scrapeFlash = 0; // 0..1 white rim round the car after a scrape
+    this.scrape = 0; // 0..1 a broken wing or floor dragging on the tarmac (the scrape loop in audio)
     // track position: P13 at the back of the grid, a place per pass either way, places lost in the pits
     this.position = START.gridCars + 1;
     this.flash = 0; // lightning
@@ -402,6 +408,8 @@ export class World {
       if (s.reaction === null) {
         if (go) {
           s.reaction = s.sinceGo;
+          if (!s.jumped) this.run.reaction = s.reaction;
+          this.emit('reaction', { reaction: s.reaction, jumped: s.jumped, great: !s.jumped && s.reaction <= START.reactionWindow });
           if (!s.jumped && s.reaction <= START.reactionWindow) {
             this.addScore(START.reactionBonus, 'other');
             this.run.greatStarts += 1;
@@ -985,6 +993,9 @@ export class World {
     if (this.ers.boosting && Math.random() < dt * 40) {
       this.particles.push({ kind: 'flame', x: rearX + 6, y: p.y + rand(-3, 3), vx: -this.speed * 0.8 - 150, vy: rand(-20, 20), r: rand(3, 6), life: 0.18, age: 0 });
     }
+    // a wing hanging off (≥ 50), or a damaged floor: it drags on the tarmac (the sound follows this.scrape)
+    const dragging = !inPit && this.speed > SPEED.base * 0.5;
+    this.scrape = !dragging ? 0 : Math.max(p.parts.wing >= 50 ? 0.5 + 0.5 * Math.min(1, (p.parts.wing - 50) / 50) : 0, p.parts.floor > 0 ? 0.25 + 0.5 * Math.min(1, p.parts.floor / 100) : 0);
     // a wing hanging off, or gone: it drags along the track and throws sparks off the nose
     if (!inPit && p.parts.wing >= 50 && this.speed > SPEED.base * 0.5 && Math.random() < dt * (p.parts.wing >= 100 ? 45 : 12)) {
       this.spawnSpark(p.x + PLAYER.width * 0.45, p.y + PLAYER.height * 0.4, 1);
@@ -1168,7 +1179,10 @@ export class World {
             hz.pace = rand(...RIVAL_AI.paceRange);
             // a place gone (not while you sit in the lane: the stop already counted what it cost)
             if (!this.pit.inLane) this.position = clampPosition(this.position + 1);
-            this.emit('passedBy', { hz, driver: hz.driver, team: hz.team, teammate: hz.teammate, side: hz.y < p.y ? 'left' : 'right', position: this.position });
+            this.emit('passedBy', {
+              hz, driver: hz.driver, team: hz.team, teammate: hz.teammate, side: hz.y < p.y ? 'left' : 'right', position: this.position,
+              closing: Math.max(0, hz.rel - scrollV) * WORLD.metresPerPx,
+            });
           }
         } else if (hz.pace) {
           // eases onto its pace (a car that has just gone past you brakes into traffic, it does not teleport)
@@ -1321,8 +1335,9 @@ export class World {
     if (!hz.grid) pts = flowPay(pts, this.bumpFlow());
     this.addScore(pts, 'passes');
     this.addPopup(p.x, p.y - 44, label, color, pts);
-    if (hz.teammate) this.emit('teammate', { count: this.run.teammatePasses, driver: hz.driver });
-    else this.emit('overtake', { count: this.overtakes, team: hz.team.name, driver: hz.driver });
+    const closing = Math.max(0, this.speed - (hz.rel || 0)) * WORLD.metresPerPx; // m/s, for the pass-by Doppler
+    if (hz.teammate) this.emit('teammate', { count: this.run.teammatePasses, driver: hz.driver, closing, grid: !!hz.grid });
+    else this.emit('overtake', { count: this.overtakes, team: hz.team.name, driver: hz.driver, closing, grid: !!hz.grid });
   }
 
   collide(hz, prect, p, dt = 1 / 60) {
@@ -1357,7 +1372,7 @@ export class World {
         const pts = flowPay(base, this.bumpFlow());
         this.addScore(pts, 'close');
         this.addPopup(hz.x, hz.y - 30, 'CLOSE', teammate ? '#e10600' : '#7df9ff', pts);
-        this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver, flow: this.flow.mult });
+        this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver, flow: this.flow.mult, side: hz.y < p.y ? 'up' : 'down' });
       }
       // a scrape: the same close call, but nearer than paint. It pays again (double in all), with a flash and a beat of slow motion
       if (near && hz.nearMiss && !hz.scraped && gap < FLOW.scrapeGap) {
@@ -1368,7 +1383,7 @@ export class World {
         this.slowmo = FLOW.scrapeSlowmo;
         this.scrapeFlash = 1;
         this.run.scrapes = (this.run.scrapes || 0) + 1;
-        this.emit('scrape', { driver: hz.driver || null, type: hz.type });
+        this.emit('scrape', { driver: hz.driver || null, type: hz.type, side: hz.y < p.y ? 'up' : 'down' });
       }
       return;
     }

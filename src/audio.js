@@ -528,8 +528,6 @@ export class AudioEngine {
     this.tone({ type: 'square', f0: 660, dur: 0.09, vol: 0.18, attack: 0, dest: v });
     this.tone({ type: 'square', f0: 990, dur: 0.12, vol: 0.18, at: 0.09, attack: 0, dest: v });
   }
-  /** Kept so older callers still chime; the real DRS cue is drsOpen(). */
-  drs() { this.goodChime(); }
   overtake(vol = 0.2) {
     const v = this.voice(0.18);
     if (!v) return;
@@ -617,6 +615,31 @@ export class AudioEngine {
       });
     }
   }
+  /**
+   * On the grid (before the lights go out): the engine holds about 10,000 rpm with a 4 Hz ±4 %
+   * launch-control bounce, and climbs when → is held. Call every frame; on=false hands back to the speedo.
+   */
+  setGridRevs(on, held = false) {
+    const e = this.engine;
+    if (!e) return;
+    if (!on) { e.grid = null; return; }
+    if (!e.grid) e.grid = { phase: Math.random(), hz: rand(3, 5) };
+    e.grid.held = !!held;
+  }
+  /**
+   * Every continuous cue off at once (a restart, a retirement): the grid bed, the safety car's
+   * burble, the damage scrape, the limiter and the grid revs. Pause needs none of this: the
+   * context is suspended, which freezes them all.
+   */
+  stopLoops() {
+    if (!this.ctx) return;
+    this.gridAmbience(0);
+    this.scCarBurble(false);
+    this.updateScrape(0);
+    this.pitLimiter(false, { beep: false });
+    this.setGridRevs(false);
+    this.windDipUntil = 0;
+  }
   /** Lights out: hush, then the whole grid launches, a wheelspin chirp, and the crowd goes up. */
   launch() {
     if (!this.ctx) return;
@@ -673,19 +696,29 @@ export class AudioEngine {
     if (!v) return;
     const pan = sidePan(side) * 0.6;
     this.noiseBurst({ filter: 'bandpass', freq: 2000, f1: 600, q: 1.2, attack: 0.03, dur: 0.25, vol: 0.32, pan, dest: v });
-    if (scrape) for (let i = 0; i < 5; i++) this.noiseBurst({ filter: 'highpass', freq: 4000, attack: 0.001, dur: 0.008, vol: 0.14, at: 0.02 + i * 0.025 + rand(0, 0.01), pan, dest: v });
+    if (scrape) this.scrapeGrain(side, v);
+  }
+  /** Scrape: five 4 kHz grains, paint on paint, on the side it happened (its own voice unless `dest`). */
+  scrapeGrain(side = 0, dest = null) {
+    const v = dest || this.voice(0.18);
+    if (!v) return;
+    const pan = sidePan(side) * 0.6;
+    for (let i = 0; i < 5; i++) this.noiseBurst({ filter: 'highpass', freq: 4000, attack: 0.001, dur: 0.008, vol: 0.14, at: 0.02 + i * 0.025 + rand(0, 0.01), pan, dest: v });
   }
 
   // ---------- pit lane ----------
-  /** Pit limiter on/off: 6000 rpm, a 10 Hz ignition-cut stutter with pops, a double dash beep on entry. */
-  pitLimiter(on) {
+  /**
+   * Pit limiter on/off: 6000 rpm, a 10 Hz ignition-cut stutter with pops, a double dash beep on
+   * entry. `beep: false` switches it silently (off in the box while the engine idles, back on to roll out).
+   */
+  pitLimiter(on, { beep = true } = {}) {
     const e = this.engine;
     if (!e || e.limiter === !!on) return;
     e.limiter = !!on;
     const t = this.ctx.currentTime;
     e.limGain.gain.setTargetAtTime(on ? 0.65 : 1, t, 0.02);
     e.limDepth.gain.setTargetAtTime(on ? 0.35 : 0, t, 0.02); // square LFO ±0.35 around 0.65: 70 % depth
-    if (on) {
+    if (on && beep) {
       const v = this.voice(0.25);
       if (v) { this.tone({ type: 'square', f0: 1000, dur: 0.07, vol: 0.09, attack: 0.002, dest: v }); this.tone({ type: 'square', f0: 1000, dur: 0.07, vol: 0.09, at: 0.12, attack: 0.002, dest: v }); }
     }
@@ -761,8 +794,6 @@ export class AudioEngine {
       e.out.gain.setTargetAtTime(1, t + 1, 0.25);
     }
   }
-  /** Kept so older callers still work: the safety car cue is scAlert(). */
-  siren() { this.scAlert(); }
   /** The safety car's road-car V8 burbling on screen (call with on=false when it leaves). */
   scCarBurble(on) {
     if (!this.ctx) return;
@@ -829,8 +860,6 @@ export class AudioEngine {
       this.noiseBurst({ filter: 'bandpass', freq: rand(2000, 5000), q: 6, attack: 0.001, dur: rand(0.01, 0.03), vol: rand(0.1, 0.22), at: 0.12 + rand(0, 0.8), pan: rand(-0.6, 0.6), dest: v });
     }
   }
-  /** Kept for older callers: the crash is crash(). */
-  crashNoise() { this.crash(); }
   /**
    * Tyre lock-up / squeal: noise through a narrow band (Q 10) at 1.0–1.6 kHz with a 6 Hz
    * ±40 Hz wobble and a faint 2nd harmonic. Slicks squeal less than road tyres, so it is
@@ -992,7 +1021,7 @@ export class AudioEngine {
     this.engine = {
       master, out, limGain, limDepth, oscs, nbp, ng, tone, synthBus, sampleBus, wh, wh2, whG, wh2G,
       gear: 1, rpm: 0.3, cut: 0, blipT: 0, revT: 0, boost: 0, lift: 0, liftCool: 0, thrHist: [],
-      limiter: false, limPhase: 0, stalled: false, running: false, throttle: 0, speedRatio: 0, loops: null,
+      limiter: false, limPhase: 0, grid: null, stalled: false, running: false, throttle: 0, speedRatio: 0, loops: null,
     };
     this.loadEngineLoops();
   }
@@ -1062,10 +1091,16 @@ export class AudioEngine {
     e.blipT = Math.max(0, e.blipT - dt);
     e.revT = Math.max(0, e.revT - dt);
     e.liftCool = Math.max(0, e.liftCool - dt);
-    let target = e.limiter ? LIMITER_NORM : rpmNorm;
+    // standing still (in the box) is true idle, 4000 rpm; the gearbox model never drops below 0.3 on the move
+    let target = e.limiter ? LIMITER_NORM : speedRatio <= 0 ? 0 : rpmNorm;
+    if (e.grid) {
+      // launch control: ±0.05 of the rev range is ±4 % of the firing frequency at 10,000 rpm
+      e.grid.phase = (e.grid.phase + dt * e.grid.hz) % 1;
+      target = (e.grid.held ? 0.87 : 0.75) + 0.05 * Math.sin(e.grid.phase * Math.PI * 2);
+    }
     if (e.revT > 0) target = 0.95;
     if (e.blipT > 0) target += 0.15;
-    e.rpm += (target - e.rpm) * Math.min(1, dt * (target < e.rpm ? 9 : e.blipT > 0 ? 30 : 5));
+    e.rpm += (target - e.rpm) * Math.min(1, dt * (e.grid ? 25 : target < e.rpm ? 9 : e.blipT > 0 ? 30 : 5));
     // lift: throttle down by more than 0.4 inside 100 ms → wastegate pssh, then a duller, quieter burble with pops
     e.thrHist.push([t, throttle]);
     while (e.thrHist.length && e.thrHist[0][0] < t - 0.1) e.thrHist.shift();

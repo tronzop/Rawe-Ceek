@@ -100,10 +100,16 @@ function startGame() {
   clearRunTimers();
   audio.stopClips();
   audio.stopMusic();
+  audio.stopLoops();
   world = new World(onWorldEvent, car);
   fit();
   world.reset();
   fit();
+  sfxState.rearWarned = false;
+  sfxState.lastMirror = -1e9;
+  sfxState.lastPassBy = -1e9;
+  // the grid around you: crowd, air and twenty revving V6s, quieter with every light
+  audio.gridAmbience(1);
   hud.radio = null;
   hud.toast = null;
   hud.damage = null;
@@ -145,7 +151,8 @@ function gameOver(payload = {}) {
   const run = world; // a restart before the callbacks below fire makes them stand down
   const still = () => state === 'over' && world === run;
   audio.fadeOutMusic(0.7); // the band dies with the car
-  audio.crashNoise();
+  audio.stopLoops();
+  audio.crash();
   later(() => { if (still()) say([Math.random() < 0.5 ? 'nomichaelno' : null, 'gameover'], { volume: 1 }); }, 250);
   const previousBest = Leaderboard.best();
   hud.best = Leaderboard.recordBest(world.score);
@@ -346,35 +353,61 @@ const SCORE_PARTS = [
   ['pit', 'Pit stops', '#2ecc71'], ['gp', 'Grands Prix', '#ffffff'], ['other', 'Bonuses', '#ff8a00'],
 ];
 const WHEEL_NAMES = { FL: 'front left', FR: 'front right', RL: 'rear left', RR: 'rear right' };
+/** Per-run sound bookkeeping: the first car in the mirrors gets a radio call, blips and Dopplers are rate-limited. */
+const sfxState = { rearWarned: false, lastMirror: -1e9, lastPassBy: -1e9 };
+/**
+ * A car going by: the Doppler of its V6 (closing speed in m/s) panning front → back when you pass
+ * (`dir` 1) or back → front when you are passed (−1). A burst of passes off the line gets one Doppler
+ * every quarter second; the rest just chime.
+ */
+function passSound(closing, dir = 1) {
+  const now = performance.now();
+  if (now - sfxState.lastPassBy < 250) { if (dir > 0) audio.overtake(0.05); return; }
+  sfxState.lastPassBy = now;
+  audio.passBy(closing || 20, 0.8 * dir, -0.8 * dir, { chime: dir > 0 });
+}
+/** "0.412 s" */
+const fmtReaction = (s) => `${s.toFixed(3)} s`;
 function onWorldEvent(evt, payload = {}) {
   switch (evt) {
     case 'radio': radio(payload.kind, payload.ctx); break;
     case 'crash': radio('crash', { driver: payload.driver }); gameOver(payload); break;
     case 'closeCall': {
       // the driver's own reaction if we have it (subtitled), else the scream, else tyre squeal
+      audio.closeWhoosh(payload.side);
       const v = say([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 });
-      if (!v) audio.skid(0.25);
       if (!clipLine(v) && (payload.count % 3 === 0 || payload.driver?.legend)) radio('closeCall', { driver: payload.driver });
       break;
     }
     case 'overtake': {
-      audio.overtake();
+      passSound(payload.closing, 1);
       const v = say([payload.driver?.clip?.overtake], { volume: 0.9, minGap: 6 });
       if (!clipLine(v) && (payload.count % 4 === 1 || payload.driver?.legend)) radio('overtake', { driver: payload.driver });
       break;
     }
     case 'oil': say(['iamstupid', 'sonotright'], { volume: 0.9, minGap: 3 }); audio.skid(0.4); radio('oil'); break;
     // --- the start ---
-    case 'light': audio.blip(392, 0.14, 'square', 0.13); break;
+    // the gantry is silent: a soft tick per light, and the grid's noise drops 2 dB with each one
+    case 'light': audio.lightTick(); audio.gridAmbience(Math.pow(10, -payload.n / 10)); break;
     case 'lightsOut':
       audio.startMusic();
-      audio.blip(784, 0.25, 'square', 0.16);
+      audio.launch(); // hush, then the whole field goes
       toast('LIGHTS OUT', '#2ecc71', payload.jumped ? 'jump start — no bonus' : 'go go go', 1);
       // Crofty if the clip is loaded (subtitled), otherwise the pit wall
       if (!clipLine(say(['lightsout'], { volume: 1 }))) radio('start');
       break;
-    case 'jumpStart': audio.blip(220, 0.15, 'sawtooth', 0.14); radio('jumpStart'); break;
-    case 'greatStart': audio.overtake(); toast('GREAT START', '#2ecc71', `${Math.round(payload.reaction * 1000)} ms reaction · +50`, 1); radio('greatStart'); break;
+    case 'jumpStart': audio.jumpStartTone(); radio('jumpStart'); break;
+    case 'reaction': {
+      // the launch, timed: under LIGHTS OUT (a great start's own toast carries it too); jump starts are not timed
+      if (payload.jumped) break;
+      const pb = !(career.bestReaction > 0) || payload.reaction < career.bestReaction;
+      if (hud.toast && hud.toast.text === 'LIGHTS OUT') {
+        hud.toast.sub = `${fmtReaction(payload.reaction)} reaction${pb ? ' · career best' : ''}`;
+        hud.toast.age = Math.min(hud.toast.age, 0.6);
+      }
+      break;
+    }
+    case 'greatStart': audio.overtake(); toast('GREAT START', '#2ecc71', `${fmtReaction(payload.reaction)} reaction · +50`, 1); radio('greatStart'); break;
     case 'slowStart': radio('slowStart'); break;
     // --- damage ---
     case 'contact':
@@ -387,7 +420,7 @@ function onWorldEvent(evt, payload = {}) {
       radio('contact', { part: payload.part, lost: payload.lost, driver: payload.driver });
       break;
     // no toast: the ERS bar flashes with what the battery actually got (see Renderer.drawHud)
-    case 'drs': audio.drs(); hud.drs = { age: 0, gain: payload.gain ?? ERS.drsRefill }; break;
+    case 'drs': audio.drsOpen(); hud.drs = { age: 0, gain: payload.gain ?? ERS.drsRefill }; break;
     case 'pushing': say([Math.random() < 0.4 ? 'hammertime' : null, 'pushing'], { volume: 1, minGap: 10 }, 'pushing'); break;
     case 'milestone':
       toast(`${payload.km} km`, '#ffd400');
@@ -404,13 +437,14 @@ function onWorldEvent(evt, payload = {}) {
       radio('pitOpen');
       coach('pit');
       break;
-    case 'pitIn': radio('pitIn'); break;
+    case 'pitIn': audio.pitLimiter(true); radio('pitIn'); break;
     case 'pitRequested': audio.blip(880, 0.08, 'square', 0.15); radio('pitRequested'); break;
     case 'pitDenied': audio.blip(220, 0.12, 'sawtooth', 0.15); radio('pitDenied'); break;
-    case 'pitStop': radio('pitGame'); break;
+    // the front jack goes in and the engine drops to idle off the limiter while the guns work
+    case 'pitStop': audio.jackClank(); audio.pitLimiter(false, { beep: false }); radio('pitGame'); break;
     case 'pitWheel':
       if (payload.result === 'miss') {
-        audio.wheelGun(3); audio.skid(0.2);
+        audio.gunStall();
         say(['wearechecking', 'sonotright'], { volume: 0.9, minGap: 2 });
         radio(payload.timedOut ? 'pitLate' : 'pitMiss', { wheel: WHEEL_NAMES[payload.wheel] });
       } else {
@@ -422,11 +456,15 @@ function onWorldEvent(evt, payload = {}) {
       const c = COMPOUNDS[payload.compound];
       // what the stop cost against the field, in track and in places
       const cost = `−${Math.round(payload.lossMetres || 0)} m · ${payload.places ? `−${payload.places} place${payload.places > 1 ? 's' : ''}` : 'no places lost'}`;
-      if (payload.record) { audio.fanfare(); toast(`${payload.time.toFixed(2)}s RECORD STOP`, '#7df9ff', `${c.label} fitted · ${cost}`, 1); radio('pitRecord'); }
-      else if (payload.clean) { audio.drs(); toast(`${payload.time.toFixed(2)}s`, '#2ecc71', `${c.label} fitted · ${cost}`, 1); radio('pitOut'); }
+      // jacks down, and back on the limiter to roll down the lane
+      audio.jacksDown();
+      audio.pitLimiter(true, { beep: false });
+      if (payload.record) { audio.fanfare(); audio.recordStopCheer(); toast(`${payload.time.toFixed(2)}s RECORD STOP`, '#7df9ff', `${c.label} fitted · ${cost}`, 1); radio('pitRecord'); }
+      else if (payload.clean) { audio.goodChime(); toast(`${payload.time.toFixed(2)}s`, '#2ecc71', `${c.label} fitted · ${cost}`, 1); radio('pitOut'); }
       else { toast(`${payload.time.toFixed(2)}s`, '#ff3b3b', `${payload.misses} wheel gun problem${payload.misses > 1 ? 's' : ''} · ${cost}`, 1); radio('pitSlow'); }
       break;
     }
+    case 'pitExit': audio.pitRelease(); break; // over the blend line: limiter off, foot down
     // the last two seconds of the window: a tick each half second (the chip and the bar blink with it)
     case 'pitWindowTick': if (carNeedsStop()) audio.blip(1568, 0.035, 'square', 0.07); break;
     case 'rainStart': {
@@ -454,7 +492,7 @@ function onWorldEvent(evt, payload = {}) {
     }
     // --- expansion ---
     case 'chequered':
-      audio.fanfare();
+      audio.chequeredCrowd(); // the grandstands and their air horns, under Crofty
       say([Math.random() < 0.5 ? 'getinthere' : 'simplylovely', 'getinthere', 'simplylovely'], { volume: 1, minGap: 5 });
       // no toast: the round card that slides in now leads with the flag, the place and the points
       hud.flag = { venue: payload.venue, position: payload.position, points: payload.points };
@@ -462,14 +500,14 @@ function onWorldEvent(evt, payload = {}) {
       break;
     case 'venue': radioLater('venue', { venue: payload.venue.name }, 1800); break; // the renderer shows the round card
     case 'night': radioLater('night', {}, 4500); break;
-    case 'scDeployed': audio.siren(); say(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking · lift to hold station', 2); radio('scDeployed'); coach('sc'); break;
+    case 'scDeployed': audio.scAlert(); say(['safetycar', 'wearechecking'], { volume: 0.9 }); toast('SAFETY CAR', '#ffd400', 'no overtaking · lift to hold station', 2); radio('scDeployed'); coach('sc'); break;
     case 'scNeutral': audio.radioClick(); toast('RACE NEUTRALISED', '#ffd400', touch ? 'wiggle your thumb up and down to keep the tyres warm' : '▲▼ weave to keep the tyres warm', 2); radio('scNeutral'); break;
-    case 'scEnding': audio.scEnding(); toast('SC IN THIS LAP', '#ffd400', 'restart coming — overtakes pay double', 2); radio('scEnding'); break;
+    case 'scEnding': audio.scLightsOff(); audio.scEnding(); toast('SC IN THIS LAP', '#ffd400', 'restart coming — overtakes pay double', 2); radio('scEnding'); break;
     case 'scCount': audio.blip(payload.n === 1 ? 784 : 660, 0.1, 'square', 0.16); break;
     case 'weave': audio.blip(payload.zone === 'hot' ? 300 : 440 + payload.heat * 300, 0.04, 'triangle', 0.08); break;
     case 'scJump': audio.overtake(); toast('JUMP', '#2ecc71', `+${SC_GAME.jumpBonus} on the restart`, 1); radio('scJump'); break;
     case 'scRestart': {
-      audio.drs();
+      audio.fieldRevSurge();
       say(['leavemealone'], { volume: 0.9, minGap: 30 });
       const sub = payload.warm === null ? 'overtakes pay double' : payload.warm ? `tyres in the window · overtakes pay double` : 'tyres cold — careful · overtakes pay double';
       toast('GREEN FLAG', payload.warm === false ? '#7df9ff' : '#2ecc71', sub, 1);
@@ -478,21 +516,31 @@ function onWorldEvent(evt, payload = {}) {
     }
     case 'penalty': audio.penalty(); audio.play('penalty', { volume: 0.9, minGap: 5 }); toast('5s PENALTY', '#ff3b3b', 'overtaking under safety car', 2); radio('penalty'); break;
     case 'teammate': {
-      audio.overtake();
+      passSound(payload.closing, 1);
       const v = say(['multi21', payload.driver?.clip?.overtake, 'itsjames'], { volume: 0.9, minGap: 6 });
       toast('MULTI 21', '#e10600', undefined, 1);
       if (!clipLine(v)) radio('teammate', { driver: payload.driver });
       break;
     }
     case 'teammateClose': {
+      audio.closeWhoosh(payload.side);
       const v = say([payload.driver?.clip?.close, 'scream'], { volume: 0.7, minGap: 2.5 });
-      if (!v) audio.skid(0.25);
       if (!clipLine(v)) radio('teammateClose', { driver: payload.driver });
       break;
     }
     case 'tow': radio('tow'); break;
-    case 'thunder': audio.play('thunder', { volume: 0.8, minGap: 4 }) || audio.thunder(); if (Math.random() < 0.5) radio('thunder'); break;
+    case 'thunder': audio.thunder(); if (Math.random() < 0.5) radio('thunder'); break;
     case 'coldTyres': radio('coldTyres'); break;
+    // --- sound-only moments ---
+    case 'passedBy': passSound(payload.closing, -1); break;
+    case 'scrape': audio.scrapeGrain(payload.side); break;
+    case 'flowTier': if (payload.up) audio.flowTierUp(payload.tier); break;
+    case 'warnShown':
+      // a car in the mirrors: a rising blip (not more than one a second), and the wall calls the first one of the run
+      if (payload.side !== 'left') break;
+      if (performance.now() - sfxState.lastMirror > 1000) { sfxState.lastMirror = performance.now(); audio.mirrorBlip(); }
+      if (!sfxState.rearWarned) { sfxState.rearWarned = true; radio('carBehind'); }
+      break;
     default: break;
   }
 }
@@ -664,7 +712,7 @@ assets.sheet.addEventListener('load', drawCarThumbs);
 function renderCareer() {
   const have = new Set(career.trophies);
   $('#careerLine').textContent = career.races
-    ? `${career.points} championship pts · ${career.gps} GPs finished · ${(career.metres / 1000).toFixed(1)} km · ${have.size}/${TROPHIES.length} trophies`
+    ? `${career.points} championship pts · ${career.gps} GPs finished · ${(career.metres / 1000).toFixed(1)} km · ${have.size}/${TROPHIES.length} trophies${career.bestReaction > 0 ? ` · best launch ${fmtReaction(career.bestReaction)}` : ''}`
     : 'No races yet. Championship starts now.';
   $('#trophyList').innerHTML = TROPHIES.map((t) => `<div class="trophy ${have.has(t.id) ? 'won' : 'locked'}"><b>${have.has(t.id) ? '🏆' : '🔒'} ${t.name}</b><span>${t.desc}</span></div>`).join('');
 }
@@ -779,9 +827,13 @@ function frame(now) {
     syncTouchPad();
     // audio follows the sim
     const ratio = clamp(world.speed / SPEED.max, 0, 1);
-    const engineOn = state === 'playing' && !(world.pit.inLane && world.pit.phase === 'stop');
+    // in the box the engine idles (off the limiter, no throttle) while the guns work
+    const engineOn = state === 'playing';
+    const inBox = world.pit.inLane && world.pit.phase === 'stop';
     const throttleNorm = clamp((world.player.throttle - 0.72) / (1.22 - 0.72), 0, 1);
-    audio.updateEngine(dt, world.pit.inLane ? 0.04 : ratio, engineOn, world.pit.inLane ? 0.2 : throttleNorm, world.ers.boosting);
+    // on the grid: launch-control revs bouncing at 10,000 rpm, higher with the throttle held
+    audio.setGridRevs(engineOn && !world.racing, st.right || st.boost || st.pointerBoost);
+    audio.updateEngine(dt, inBox ? 0 : world.pit.inLane ? 0.04 : ratio, engineOn, inBox ? 0 : world.pit.inLane ? 0.2 : throttleNorm, world.ers.boosting);
     audio.setMusicState(lerp(96, 172, world.intensity), clamp(world.intensity * 1.15 + (world.raining ? 0.1 : 0) + (world.sc.restartTimer > 0 ? 0.2 : 0) - (world.sc.active ? 0.3 : 0), 0, 1));
     // continuous cues that track what is on screen: the tow streaks, the rain, the ERS flames, the flat tyre's sparks
     const playing = state === 'playing';
@@ -789,6 +841,10 @@ function frame(now) {
     audio.updateRain(playing ? world.rain : 0);
     audio.updateErs(playing && world.ers.boosting, world.ers.charge / ERS.max);
     audio.updatePuncture(playing && world.tyre.punctured && !world.pit.inLane, ratio);
+    // the wing or floor dragging on the tarmac, and the safety car's V8 while it is on screen
+    audio.updateScrape(playing ? world.scrape : 0);
+    const scCar = world.sc.car;
+    audio.scCarBurble(playing && !!scCar && scCar.x > -120 && scCar.x < world.width + 120);
   }
   requestAnimationFrame(frame);
 }
@@ -799,4 +855,4 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && sta
 syncRotate();
 
 // Debug hook (used by the smoke test): window.raweCeek.world etc.
-window.raweCeek = { get world() { return world; }, get state() { return state; }, get car() { return car; }, get hud() { return hud; }, startGame, pause, resume, selectCar };
+window.raweCeek = { get world() { return world; }, get state() { return state; }, get car() { return car; }, get hud() { return hud; }, get audio() { return audio; }, startGame, pause, resume, selectCar };
