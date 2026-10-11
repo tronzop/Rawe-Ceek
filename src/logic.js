@@ -31,19 +31,27 @@ export function gripFactor(compoundId, wear, rain) {
   return g;
 }
 
-/** Wear added over dt seconds at a given speed; `wearMul` is the car's tyre-wear multiplier. */
-export function wearDelta(compoundId, speed, dt, wearMul = 1) {
+/**
+ * Wear added over dt seconds at a given speed; `wearMul` is the car's tyre-wear multiplier.
+ * `refSpeed` is what counts as neutral (the world passes the current base speed), so pushing
+ * costs rubber but merely surviving longer does not.
+ */
+export function wearDelta(compoundId, speed, dt, wearMul = 1, refSpeed = SPEED.base) {
   const c = COMPOUNDS[compoundId];
-  const ratio = speed / SPEED.base;
+  const ratio = speed / refSpeed;
   return ratio * ratio * c.wearRate * TYRES.wearPerSecond * wearMul * dt;
 }
 
-/** Player scroll speed given the current state; `speedMul` is the car's top-speed multiplier. */
-export function playerSpeed({ elapsed, throttle, boosting, grip, inPit, spun, speedMul = 1 }) {
+/**
+ * Player scroll speed given the current state; `speedMul` is the car's top-speed multiplier and
+ * `pace` the compound's straight-line pace (COMPOUNDS.*.pace).
+ */
+export function playerSpeed({ elapsed, throttle, boosting, grip, inPit, spun, speedMul = 1, pace = 1 }) {
   if (inPit) return SPEED.pitLimit;
   let v = baseSpeed(elapsed) * throttle * speedMul;
-  // low grip caps how much of the throttle you can actually use
-  v *= lerp(0.55, 1, clamp(grip, 0, 1));
+  // low grip caps how much of the throttle you can actually use; extra grip above 1 buys nothing here,
+  // a soft's advantage on the straight is its pace
+  v *= lerp(0.55, 1, clamp(grip, 0, 1)) * pace;
   if (boosting) v *= ERS.boostMultiplier;
   if (spun) v *= 0.35;
   return v;
@@ -91,6 +99,15 @@ export function rectCircleGap(rect, cx, cy, r) {
   const nx = clamp(cx, rect.x, rect.x + rect.w);
   const ny = clamp(cy, rect.y, rect.y + rect.h);
   return Math.hypot(cx - nx, cy - ny) - r;
+}
+/**
+ * Gap between a rect and an axis-aligned ellipse, measured in ellipse radii (<= 0 when touching).
+ * Exact: squash space so the ellipse becomes a unit circle, then it is a rect/circle test.
+ */
+export function rectEllipseGap(rect, cx, cy, rx, ry) {
+  const nx = (clamp(cx, rect.x, rect.x + rect.w) - cx) / rx;
+  const ny = (clamp(cy, rect.y, rect.y + rect.h) - cy) / ry;
+  return Math.hypot(nx, ny) - 1;
 }
 export function rectsOverlap(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
@@ -154,6 +171,18 @@ export function weaveZone(heat) {
 export function weaveBonus(inBand, total) {
   if (total <= 0) return 0;
   return Math.round((SC_GAME.bonus * clamp(inBand / total, 0, 1)) / 10) * 10;
+}
+
+// ----- tyres for the weather -----
+/** Slicks on a wet track (rain above 0.35) or rain tyres on a dry one (below 0.1). */
+export function wrongForWeather(compoundId, rain) {
+  const c = COMPOUNDS[compoundId];
+  if (!c) return false;
+  return c.wet === undefined ? rain > 0.35 : rain < 0.1;
+}
+/** The tyre the wall would fit for this much water: medium, inter, or full wet. */
+export function bestCompound(rain) {
+  return rain > 0.7 ? 'wet' : rain > 0.35 ? 'inter' : 'medium';
 }
 
 /** Grip multiplier from tyre temperature 0..1. */

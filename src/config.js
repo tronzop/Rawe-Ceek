@@ -43,17 +43,20 @@ export const ERS = {
 };
 
 export const COMPOUNDS = {
-  soft: { id: 'soft', label: 'SOFT', short: 'S', color: '#ff3b3b', grip: 1.12, wearRate: 1.7 },
-  medium: { id: 'medium', label: 'MEDIUM', short: 'M', color: '#ffd400', grip: 1.0, wearRate: 1.0 },
-  hard: { id: 'hard', label: 'HARD', short: 'H', color: '#f2f2f2', grip: 0.9, wearRate: 0.62 },
-  inter: { id: 'inter', label: 'INTER', short: 'I', color: '#2ecc71', grip: 0.8, wearRate: 1.15, wet: 0.6 },
-  wet: { id: 'wet', label: 'WET', short: 'W', color: '#2f80ff', grip: 0.72, wearRate: 1.05, wet: 1.0 },
+  soft: { id: 'soft', label: 'SOFT', short: 'S', color: '#ff3b3b', grip: 1.12, pace: 1.05, wearRate: 1.7 },
+  medium: { id: 'medium', label: 'MEDIUM', short: 'M', color: '#ffd400', grip: 1.0, pace: 1.0, wearRate: 1.0 },
+  hard: { id: 'hard', label: 'HARD', short: 'H', color: '#f2f2f2', grip: 0.9, pace: 0.96, wearRate: 0.62 },
+  inter: { id: 'inter', label: 'INTER', short: 'I', color: '#2ecc71', grip: 0.8, pace: 1.0, wearRate: 1.15, wet: 0.6 },
+  wet: { id: 'wet', label: 'WET', short: 'W', color: '#2f80ff', grip: 0.72, pace: 1.0, wearRate: 1.05, wet: 1.0 },
 };
+// `grip` is cornering (steering speed, and the throttle you can use once it falls below 1);
+// `pace` is straight-line speed on top of that, so a fresh soft is quicker than a medium.
 export const COMPOUND_ORDER = ['soft', 'medium', 'hard', 'inter', 'wet'];
 
 export const TYRES = {
-  // Wear accrues as (speed/base)^2 * compound.wearRate * this per second.
-  wearPerSecond: 1.35,
+  // Wear accrues as (speed/current base speed)^2 * compound.wearRate * this per second, so a
+  // stint lasts about as long at 3 minutes as at the start (a medium at neutral throttle hits the cliff in ~30 s).
+  wearPerSecond: 1.95,
   // Above this wear (0..100) grip falls off linearly to gripAtCliff at 100.
   cliffStart: 65,
   gripAtCliff: 0.45,
@@ -85,12 +88,15 @@ export const WEATHER = {
 };
 
 export const SPAWN = {
-  baseInterval: 1.05, // seconds between hazards at t=0
-  minInterval: 0.38,
-  intervalDecayPerSecond: 0.0085,
+  // Seconds between hazards (the timer runs on track covered, see World.updateSpawns). Traffic now
+  // stays on screen for a while as you reel it in, so this is sparser than it looks; the floor
+  // arrives at about three minutes.
+  baseInterval: 1.3, // at t=0
+  minInterval: 0.45,
+  intervalDecayPerSecond: 0.0048,
   drsEvery: { min: 9, max: 16 },
   // Relative weights of hazard types; shifted over time in logic.pickHazard.
-  weights: { tyre: 5, rival: 3.2, oil: 1.6, debris: 1.4 },
+  weights: { tyre: 5, rival: 2.2, oil: 1.6, debris: 1.4 },
 };
 
 export const SCORING = {
@@ -163,7 +169,7 @@ export const SAFETY_CAR = {
   speedCap: 0.62, // fraction of base speed while deployed (at neutral throttle; lifting goes slower)
   liftFloor: 0.7, // lifting fully under the safety car gets you down to this fraction of the cap
   bunchSpread: [0.98, 1.05], // rivals under the safety car run at this fraction of the cap (some hold, some pull away)
-  graceSeconds: 1.5, // no penalty for passes in the first moments after the yellow
+  graceSeconds: 0.4, // no penalty for passes in the first moments after the yellow (the takeover is SC_GAME.takeoverAfter)
   penaltySeconds: 5,
   penaltyCap: 0.5, // speed cap while serving a penalty
   restartWindow: 4, // seconds after the restart where overtakes pay double
@@ -180,7 +186,7 @@ export const SLIPSTREAM = {
 export const TYRE_TEMP = {
   warmupSeconds: 4.5, // time for fresh tyres to come up to temperature
   coldGrip: 0.78, // grip multiplier when stone cold
-  rainCooling: 0.04, // per second temp loss while it rains
+  rainCooling: 0.35, // per second temp loss on a fully wet track: slicks go cold in the rain (inters/wets lose 0.3 of this)
 };
 
 export const TEAMMATE = {
@@ -192,6 +198,8 @@ export const RIVAL_AI = {
   defendChance: 0.35, // rivals that move to cover your lane
   defendRange: 340,
   defendSpeed: 70, // px/s lateral
+  paceRange: [0.62, 0.85], // ordinary traffic runs at this fraction of the current base speed (you are ~1.0)
+  passMargin: [180, 320], // px/s a car attacking from behind runs above your speed until it is past your nose
 };
 
 export const STORM = {
@@ -213,7 +221,7 @@ export const SAFETY_CAR_TEAM = { name: 'Safety Car', primary: '#c9ccd2', accent:
  * countdown hands the car back at the green. Warm tyres restart with grip; cold ones do not.
  */
 export const SC_GAME = {
-  takeoverAfter: 1.5, // seconds after the yellow before the car is taken off you (the field bunches up first)
+  takeoverAfter: 3.0, // seconds after the yellow before the car is taken off you (the field bunches up first)
   paceFactor: 0.97, // fraction of the safety-car speed cap the neutralised car holds (rivals ahead pull away slowly)
   weaveAmplitude: 40, // px either side of the centre line the weave can reach
   weaveSpeed: 0.9, // fraction of normal vertical speed while weaving
@@ -245,7 +253,9 @@ export const START = {
   launchSeconds: 10, // opening phase: no hazards spawn, contact with rivals is survivable
   launchAccel: 1.7, // how quickly you get up to speed off the line (normal is 2.5)
   rivalAccel: { min: 1.2, max: 2.6 }, // spread of rival launches (some bog down, some rocket)
-  rivalLaunch: { slow: [-210, -70], fast: [30, 110] }, // px/s relative to you once everyone is up to speed
+  // where each car settles relative to the pack once everyone is up to speed: slow starters as a
+  // fraction of the pack speed (they fade back to you), fast ones px/s above it (they pull away)
+  rivalLaunch: { slow: [-0.35, -0.12], fast: [30, 110] },
   fastShare: 0.35, // share of the grid that pulls away instead of coming back to you
   launchBog: [-30, 50], // px/s per-car wobble in the first moment off the line (a few bog down, most get away)
   spreadOver: 0.7, // fraction of launchSeconds over which the pack spreads from a unit to its settled speeds
