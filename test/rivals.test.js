@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { World } from '../src/world.js';
 import { carById } from '../src/cars.js';
-import { DAMAGE, RIVAL_AI, SAFETY_CAR } from '../src/config.js';
+import { DAMAGE, HITBOX, RIVAL_AI, SAFETY_CAR, WARN } from '../src/config.js';
 import { baseSpeed } from '../src/logic.js';
 
 const DT = 1 / 60;
@@ -74,7 +74,7 @@ test('a gentle nose-to-tail touch costs the front wing, not the race', () => {
   const prect = w.playerRect;
   const rival = spawnRival(w, (h) => !h.fromBehind);
   rival.y = w.player.y;
-  rival.x = prect.x + prect.w + rival.w / 2 - 1; // just touching your nose
+  rival.x = prect.x + prect.w - HITBOX.rival.body.x0 * rival.w - 1; // its gearbox just touching your nose
   rival.rel = w.speed - 100;
   rival.pace = rival.rel / baseSpeed(w.elapsed);
   rival.defend = false;
@@ -97,8 +97,9 @@ test('a car from behind actually comes past, then settles into traffic you can t
   hz.y = w.trackTop + 40; // out of your lane
   w.player.y = w.trackBottom - 40;
   let t = 0;
-  while (hz.x <= 0 && t < 1.5) { w.update(DT, idle()); t += DT; }
-  assert.ok(hz.x > 0, `on screen within 1.5 s (x=${hz.x.toFixed(0)} after ${t.toFixed(2)} s)`);
+  // (it starts far enough back for its mirror warning to show for WARN.mirrorLead first)
+  while (hz.x <= 0 && t < 1.5 + WARN.mirrorLead) { w.update(DT, idle()); t += DT; }
+  assert.ok(hz.x > 0, `on screen within ${1.5 + WARN.mirrorLead} s (x=${hz.x.toFixed(0)} after ${t.toFixed(2)} s)`);
   step(w, idle(), 3);
   assert.equal(hz.fromBehind, false, 'clear of your nose');
   assert.ok(events.some(([e]) => e === 'passedBy'));

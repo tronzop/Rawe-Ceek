@@ -261,16 +261,23 @@ test('damage: gentle contact costs a part, hard contact costs the race, the laun
   const { DAMAGE } = await configP;
   const fresh = { wing: 0, floor: 0 };
   const base = { ahead: true, ox: 6, oy: 30, h: 30, closing: 80, launch: false, parts: fresh };
-  assert.equal(contactOutcome(base), 'wing'); // nose into a slow car ahead
-  assert.equal(contactOutcome({ ...base, closing: DAMAGE.maxClosing + 1 }), 'crash'); // too fast
-  assert.equal(contactOutcome({ ...base, ox: DAMAGE.frontalDepth + 1 }), 'crash'); // too deep
-  assert.equal(contactOutcome({ ...base, closing: 400, ox: 40, launch: true }), 'wing'); // anything goes off the line
-  assert.equal(contactOutcome({ ...base, oy: 8 }), 'floor'); // alongside: a rub, whatever the speed
-  assert.equal(contactOutcome({ ...base, oy: 8, closing: 400 }), 'floor');
-  assert.equal(contactOutcome({ ...base, ahead: false }), 'crash'); // rear-ended outside the launch
-  assert.equal(contactOutcome({ ...base, ahead: false, launch: true }), 'floor');
-  assert.equal(contactOutcome({ ...base, parts: { wing: 100, floor: 0 } }), 'crash'); // no wing left to lose
-  assert.equal(contactOutcome({ ...base, launch: true, parts: { wing: 100, floor: 0 } }), 'crash');
+  // the verdict, as the world reads it: crashed or not, which part took it, and why (for the retirement screen)
+  const v = (o) => { const r = contactOutcome(o); return r.crash ? 'crash' : r.part; };
+  assert.equal(v(base), 'wing'); // nose into a slow car ahead
+  assert.equal(contactOutcome(base).reason, 'gentle');
+  assert.equal(v({ ...base, closing: DAMAGE.maxClosing + 1 }), 'crash'); // too fast
+  assert.equal(contactOutcome({ ...base, closing: DAMAGE.maxClosing + 1 }).reason, 'hard');
+  assert.equal(v({ ...base, ox: DAMAGE.frontalDepth + 1 }), 'crash'); // too deep
+  assert.equal(contactOutcome({ ...base, ox: DAMAGE.frontalDepth + 1 }).reason, 'deep');
+  assert.equal(v({ ...base, closing: 400, ox: 40, launch: true }), 'wing'); // anything goes off the line
+  assert.equal(v({ ...base, oy: 8 }), 'floor'); // alongside: a rub, whatever the speed
+  assert.equal(v({ ...base, oy: 8, closing: 400 }), 'floor');
+  assert.equal(v({ ...base, ahead: false }), 'crash'); // rear-ended outside the launch
+  assert.equal(contactOutcome({ ...base, ahead: false }).reason, 'rear');
+  assert.equal(v({ ...base, ahead: false, launch: true }), 'floor');
+  assert.equal(v({ ...base, parts: { wing: 100, floor: 0 } }), 'crash'); // no wing left to lose
+  assert.deepEqual(contactOutcome({ ...base, parts: { wing: 100, floor: 0 } }), { crash: true, part: 'wing', reason: 'terminal' });
+  assert.equal(v({ ...base, launch: true, parts: { wing: 100, floor: 0 } }), 'crash');
   assert.deepEqual(damageEffects(fresh), { throttleLoss: 0, gripMul: 1 });
   const wrecked = damageEffects({ wing: 100, floor: 100 });
   assert.ok(Math.abs(wrecked.throttleLoss - DAMAGE.wingThrottleLoss) < 1e-9);

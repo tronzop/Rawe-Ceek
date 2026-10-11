@@ -1,13 +1,13 @@
 // Canvas renderer. Reads the World and draws the whole scene + HUD.
 // The world is in logical units (height = WORLD.height); `view.scale` maps to device px.
-import { COMPOUNDS, DAMAGE, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SC_GAME, SPEED, START, TYRES } from './config.js';
+import { COMPOUNDS, DAMAGE, ERS, PITGAME, PLAYER, SAFETY_CAR_TEAM, SC_GAME, SPEED, START, TYRES, WARN } from './config.js';
 import { clamp, engineState, formatDistance, formatTime, gpProgress, lerp, positionLabel, sweepPos, wheelZones } from './logic.js';
 import { drawLivery } from './livery.js';
 
 const FONT = '"Segoe UI", system-ui, Roboto, sans-serif';
 const MONO = '"Cascadia Mono", Consolas, "Roboto Mono", monospace';
 /** Damage card size (top-left, under the score); the radio strip keeps clear of it on narrow screens. */
-const DAMAGE_CARD = { w: 176, h: 50 };
+const DAMAGE_CARD = { w: 176, h: 58 };
 /** Tutorial tips shown one at a time after the lights, `each` seconds apiece. `[KEY]` draws a keycap. */
 const COACH = {
   each: 3.2,
@@ -41,6 +41,8 @@ export class Renderer {
     this.touch = false; // set by main on phones: coach tips name the touch-pad buttons
     this.time = 0;
     this.zoom = 1;
+    this.debugHitbox = false; // ?hitbox=1: stroke every hit part (main sets it)
+    this.vis = { x0: 0, x1: 1280, y0: 0, y1: 720 }; // the world rect on screen this frame (wider than the view while zoomed out)
     // pre-render the kerb strip as a pattern-ish tile for cheapness
     this.kerb = document.createElement('canvas');
     this.kerb.width = 64;
@@ -79,19 +81,36 @@ export class Renderer {
       const s = world.shake * 6;
       ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
     }
-    // boost / tow zoom: a subtle push-in centred on the car; the pit-entry cinematic pushes in harder
-    const targetZoom = (world.ers.boosting ? 1.045 : 1 + world.tow * 0.015) + world.cine * 0.08;
+    // boost zooms out a touch so you see more of what is coming at that speed; the tow pushes in
+    // a little, and the pit-entry cinematic pushes in harder. Centred on the car.
+    const targetZoom = (world.ers.boosting ? 0.96 : 1 + world.tow * 0.015) + world.cine * 0.08;
     this.zoom += (targetZoom - this.zoom) * Math.min(1, dt * 6);
-    if (Math.abs(this.zoom - 1) > 0.001) {
-      ctx.translate(world.player.x, world.player.y);
-      ctx.scale(this.zoom, this.zoom);
-      ctx.translate(-world.player.x, -world.player.y);
+    const px = world.player.x, py = world.player.y, z = this.zoom;
+    if (Math.abs(z - 1) > 0.001) {
+      ctx.translate(px, py);
+      ctx.scale(z, z);
+      ctx.translate(-px, -py);
     }
-    this.drawBackdrop(world, W, H);
-    this.drawPitLane(world, W);
-    this.drawTrack(world, W);
+    // zoomed out, the scenery has to cover more than the view: draw it over the visible world rect
+    const out = z < 1;
+    const vis = out ? { x0: px - px / z, x1: px + (W - px) / z, y0: py - py / z, y1: py + (H - py) / z } : { x0: 0, x1: W, y0: 0, y1: H };
+    this.vis = vis;
+    const VW = vis.x1 - vis.x0;
+    if (out) {
+      ctx.fillStyle = this.vcolor(world, 'sky', 0);
+      ctx.fillRect(vis.x0, vis.y0, VW, -vis.y0 + 1);
+    }
+    ctx.save();
+    if (out) ctx.translate(vis.x0, 0);
+    this.drawBackdrop(world, VW, H);
+    this.drawPitLane(world, VW);
+    this.drawTrack(world, VW);
+    ctx.restore();
     this.drawGrid(world, W);
-    this.drawGrassBottom(world, W, H);
+    ctx.save();
+    if (out) ctx.translate(vis.x0, 0);
+    this.drawGrassBottom(world, VW, Math.max(H, vis.y1));
+    ctx.restore();
     for (const hz of world.hazards) if (hz.type === 'oil' || hz.type === 'drs') this.drawHazard(hz, world);
     this.drawParticles(world, ['spray', 'smoke', 'streak']);
     for (const hz of world.hazards) if (hz.type !== 'oil' && hz.type !== 'drs') this.drawHazard(hz, world);
@@ -99,15 +118,21 @@ export class Renderer {
     if (world.cine > 0.02) this.drawPitApproach(world, W);
     if (world.player.grace > 0 && world.cine <= 0.02) this.drawGraceRing(world);
     this.drawPlayer(world);
+    if (world.player.alive && Math.max(world.player.parts.wing, world.player.parts.floor) >= 100) this.drawTerminalRing(world);
     // stationary car: mechanics at each wheel + the wheel-gun mini-game (drawn late so nothing paints over it)
     if (world.pit.inLane && world.pit.phase === 'stop' && world.pit.game) this.drawPitGame(world);
     this.drawParticles(world, ['flame', 'spark', 'carbon']);
     this.drawMarshals(world, W);
     this.drawNight(world, W, H);
     this.drawWeather(world, W, H);
+    this.drawHazardRims(world);
+    if (this.debugHitbox) this.drawHitboxes(world);
+    if (world.gameOver && world.crashShapes) this.drawCrashShapes(world);
     this.drawSpeedLines(world, W, H);
     this.drawPopups(world);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    if (hud && hud.damage && hud.damage.age < 0.4 && !world.gameOver) this.drawHitVignette(W, H, 1 - hud.damage.age / 0.4);
+    if (hud && !world.gameOver) this.drawIncoming(world, W);
     if (world.cine > 0.02) this.drawLetterbox(world, W, H);
     if (world.flash > 0) {
       ctx.fillStyle = `rgba(255,255,255,${0.75 * world.flash})`;
@@ -850,6 +875,190 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** Part at 100 %: a pulsing red outline round the car (the grace-ring shape). The next hit is the race. */
+  drawTerminalRing(world) {
+    const { ctx } = this;
+    const p = world.player;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.tilt);
+    ctx.strokeStyle = `rgba(255,59,59,${0.45 + 0.4 * Math.sin(this.time * 9)})`;
+    ctx.lineWidth = 3;
+    roundRect(ctx, -PLAYER.width / 2 - 8, -PLAYER.height / 2 - 8, PLAYER.width + 16, PLAYER.height + 16, 14);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * Hazards stay readable at night and in the rain: a bright rim pass drawn over the darkness and
+   * the spray. Debris glints red/white, oil gets a sheen ring at its full size, tyres a compound ring.
+   */
+  drawHazardRims(world) {
+    const a = Math.max(world.night, world.rain * 0.7);
+    if (a <= 0.03) return;
+    const { ctx } = this;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = a;
+    const glint = Math.sin(this.time * Math.PI * 2 * 6) > 0; // 6 Hz
+    for (const hz of world.hazards) {
+      if (hz.type === 'tyre') {
+        ctx.strokeStyle = hz.compound.color;
+        ctx.lineWidth = Math.max(2.5, hz.r * 0.18);
+        ctx.beginPath(); ctx.arc(hz.x, hz.y, hz.r + 2, 0, Math.PI * 2); ctx.stroke();
+      } else if (hz.type === 'debris') {
+        ctx.strokeStyle = glint ? '#ff3b3b' : '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(hz.x, hz.y, hz.r + 4, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = glint ? 'rgba(255,255,255,0.9)' : 'rgba(255,59,59,0.9)';
+        ctx.beginPath(); ctx.arc(hz.x + Math.cos(hz.spin) * hz.r * 0.5, hz.y + Math.sin(hz.spin) * hz.r * 0.5, 2.5, 0, Math.PI * 2); ctx.fill();
+      } else if (hz.type === 'oil') {
+        ctx.strokeStyle = `hsla(${(this.time * 90) % 360} 90% 65% / 0.8)`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.ellipse(hz.x, hz.y, hz.w / 2, hz.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+      } else if (hz.type === 'stranded') {
+        ctx.strokeStyle = Math.sin(this.time * 8) > 0 ? '#ffd400' : 'rgba(255,212,0,0.3)';
+        ctx.lineWidth = 2.5;
+        roundRect(ctx, hz.x - hz.w / 2 - 4, hz.y - hz.h / 2 - 4, hz.w + 8, hz.h + 8, 10);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  /** ?hitbox=1: every hit part on screen, the car's body and cockpit blocks included. */
+  drawHitboxes(world) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.lineWidth = 1.5;
+    const rects = (list, color) => { ctx.strokeStyle = color; for (const r of list) ctx.strokeRect(r.x, r.y, r.w, r.h); };
+    if (world.player.alive) rects(world.playerParts, '#00ff88');
+    for (const hz of world.hazards) {
+      if (hz.type === 'rival' || hz.type === 'stranded') rects(world.hazardParts(hz), hz.fromBehind ? '#ff66ff' : '#ffd400');
+      else if (hz.type === 'tyre' || hz.type === 'debris') {
+        ctx.strokeStyle = '#ff3b3b';
+        ctx.beginPath(); ctx.arc(hz.x, hz.y, hz.r, 0, Math.PI * 2); ctx.stroke();
+      } else if (hz.type === 'oil') {
+        ctx.strokeStyle = '#b266ff';
+        ctx.beginPath(); ctx.ellipse(hz.x, hz.y, hz.w * 0.42, hz.h * 0.42, 0, 0, Math.PI * 2); ctx.stroke();
+      } else if (hz.type === 'drs') rects([{ x: hz.x - hz.w / 2, y: hz.y - hz.h / 2, w: hz.w, h: hz.h }], '#2ecc71');
+    }
+    ctx.restore();
+  }
+
+  /** The crash freeze-frame: both hitboxes outlined in red where they met, fading once the tumble starts. */
+  drawCrashShapes(world) {
+    const a = clamp(1.4 - world.gameOverTime / 0.6, 0, 1);
+    if (a <= 0) return;
+    const { ctx } = this;
+    const c = world.crashShapes;
+    ctx.save();
+    ctx.strokeStyle = `rgba(255,59,59,${a})`;
+    ctx.shadowColor = 'rgba(255,0,0,0.8)';
+    ctx.shadowBlur = 8;
+    ctx.lineWidth = 2.5;
+    for (const r of [...c.player, ...c.rects]) ctx.strokeRect(r.x, r.y, r.w, r.h);
+    if (c.circle) { ctx.beginPath(); ctx.arc(c.circle.x, c.circle.y, c.circle.r, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.restore();
+  }
+
+  /** A hit: the screen edges flash red for a moment. */
+  drawHitVignette(W, H, a) {
+    const { ctx } = this;
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.65);
+    g.addColorStop(0, 'rgba(255,0,0,0)');
+    g.addColorStop(1, `rgba(255,30,30,${0.45 * a})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  /**
+   * Edge warnings (world.warnings): a chevron on the right edge for each hazard about to come on,
+   * at the height it will arrive, in its colour (tyre: compound, rival: team, oil: purple, debris:
+   * red, stranded car: flashing yellow), growing and pulsing as it gets close; a ◀◀ mirror chevron
+   * on the left edge and a pip on your car's tail for a car coming from behind. Screen space.
+   */
+  drawIncoming(world, W) {
+    const list = world.warnings;
+    if (!list || !list.length) return;
+    const { ctx } = this;
+    // zoomed out, the view reaches a little further right than the world's width: skip what is already visible
+    const visRight = this.vis.x1;
+    const mapY = (y) => world.player.y + (y - world.player.y) * this.zoom;
+    ctx.save();
+    for (const wn of list) {
+      const hz = wn.hz;
+      let color;
+      switch (hz.type) {
+        case 'tyre': color = hz.compound.color; break;
+        case 'rival': color = hz.team.primary; break;
+        case 'oil': color = '#b266ff'; break;
+        case 'debris': color = '#ff3b3b'; break;
+        case 'stranded': color = Math.sin(this.time * 10) > 0 ? '#ffd400' : '#6b5a00'; break;
+        default: color = '#fff';
+      }
+      // (kept clear of the tyre card that overlaps the bottom of the track in the right corner)
+      const y = clamp(mapY(wn.y), world.trackTop + 10, wn.side === 'right' ? Math.min(world.trackBottom - 10, world.height - 136) : world.trackBottom - 10);
+      if (wn.side === 'right') {
+        if (hz.x - (hz.r ?? hz.w / 2) < visRight) continue;
+        const k = 1 - clamp(wn.eta / WARN.lead, 0, 1); // 0 far .. 1 arriving
+        const s = (hz.big ? 18 : 14) + 8 * k;
+        const pulse = 0.65 + 0.35 * Math.sin(this.time * (8 + 10 * k));
+        const x = W - 6 - s; // the tip, pointing in at the track
+        ctx.globalAlpha = clamp(0.35 + 0.65 * k, 0, 1) * pulse + 0.15;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        this.chevron(x + 2, y + 2, s, -1);
+        ctx.fillStyle = color;
+        this.chevron(x, y, s, -1);
+        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        if (hz.big || hz.type === 'stranded') {
+          ctx.font = `900 10px ${FONT}`;
+          ctx.textAlign = 'right';
+          ctx.fillStyle = color;
+          ctx.fillText(hz.big ? 'BIG' : 'STOPPED', x - 4, y + 4);
+        }
+      } else {
+        // mirrors: ◀◀ on the left edge while it is still off screen, then a pip on your tail as it comes up
+        const k = 1 - clamp(wn.eta / WARN.mirrorLead, 0, 1);
+        const pulse = 0.65 + 0.35 * Math.sin(this.time * 12);
+        ctx.globalAlpha = (0.5 + 0.5 * k) * pulse;
+        if (hz.x + hz.w / 2 < 0) {
+          for (const dx of [6, 21]) {
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            this.chevron(dx + 1.5, y + 1.5, 13, -1);
+            ctx.fillStyle = color;
+            this.chevron(dx, y, 13, -1);
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+          }
+        }
+        const p = world.player;
+        const tailX = p.x - (PLAYER.width / 2) * this.zoom - 8;
+        const pipY = mapY(p.y) + clamp(y - mapY(p.y), -PLAYER.height * 0.5, PLAYER.height * 0.5);
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(tailX, pipY, 5 + 2 * k, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  /** A filled chevron with its tip at (x, y) pointing `dir` (-1 left, 1 right); leaves the path for a stroke. */
+  chevron(x, y, s, dir) {
+    const { ctx } = this;
+    ctx.beginPath();
+    ctx.moveTo(x + dir * s * 0.1, y);
+    ctx.lineTo(x - dir * s * 0.9, y - s);
+    ctx.lineTo(x - dir * s * 0.45, y);
+    ctx.lineTo(x - dir * s * 0.9, y + s);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   /** Cinematic letterbox + caption while boxing. */
   drawLetterbox(world, W, H) {
     const { ctx } = this;
@@ -992,8 +1201,9 @@ export class Renderer {
     const n = world.night;
     if (n <= 0.02) return;
     const { ctx } = this;
+    const v = this.vis;
     ctx.fillStyle = `rgba(6,9,28,${0.5 * n})`;
-    ctx.fillRect(0, world.pitTop * 0.56, W, H - world.pitTop * 0.56);
+    ctx.fillRect(v.x0, world.pitTop * 0.56, v.x1 - v.x0, Math.max(H, v.y1) - world.pitTop * 0.56);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = n;
@@ -1068,8 +1278,9 @@ export class Renderer {
       ctx.lineTo(x - 14, y + 18);
     }
     ctx.stroke();
+    const v = this.vis;
     ctx.fillStyle = `rgba(90,110,150,${0.16 * world.rain})`;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(v.x0, v.y0, v.x1 - v.x0, v.y1 - v.y0);
   }
 
   /** Motion streaks at the screen edges when the speed gets silly. */
@@ -1894,23 +2105,26 @@ export class Renderer {
     const total = world.damage;
     ctx.textAlign = 'left';
     ctx.font = `bold 10px ${FONT}`;
-    ctx.fillStyle = total >= 100 ? '#ff3b3b' : total >= DAMAGE.needsStop ? '#ffd400' : '#c9ced9';
-    ctx.fillText(total >= 100 ? 'DAMAGE · TERMINAL' : total >= DAMAGE.needsStop ? 'DAMAGE · BOX' : 'DAMAGE', x + 12, y + 15);
+    const terminal = total >= 100;
+    ctx.fillStyle = terminal ? (Math.sin(this.time * 9) > -0.3 ? '#ff3b3b' : '#7a1010') : total >= DAMAGE.needsStop ? '#ffd400' : '#c9ced9';
+    if (terminal) ctx.font = `900 11px ${FONT}`;
+    ctx.fillText(terminal ? 'NEXT HIT = OUT' : total >= DAMAGE.needsStop ? 'DAMAGE · BOX' : 'DAMAGE', x + 12, y + 15);
+    ctx.font = `bold 10px ${FONT}`;
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#c9ced9';
-    ctx.fillText(`${Math.round(total)}%`, x + w - 12, y + 15);
+    ctx.fillStyle = terminal ? '#ff3b3b' : '#c9ced9';
+    ctx.fillText(terminal ? 'BOX' : `${Math.round(total)}%`, x + w - 12, y + 15);
     ctx.textAlign = 'left';
     const bars = [['F WING', wing, 'wing'], ['FLOOR', floor, 'floor']];
     bars.forEach(([label, v, part], i) => {
-      const by = y + 23 + i * 12;
+      const by = y + 24 + i * 15;
       const hot = hud.damage && hud.damage.part === part && flash > 0;
-      ctx.font = `bold 9px ${FONT}`;
-      ctx.fillStyle = hot ? '#fff' : '#8a91a0';
-      ctx.fillText(label, x + 12, by + 7);
+      ctx.font = `bold 11px ${FONT}`;
+      ctx.fillStyle = hot ? '#fff' : v >= 100 ? '#ff3b3b' : '#8a91a0';
+      ctx.fillText(label, x + 12, by + 9);
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
-      ctx.fillRect(x + 56, by, w - 68, 7);
+      ctx.fillRect(x + 62, by, w - 74, 9);
       ctx.fillStyle = v >= 100 ? '#ff3b3b' : v >= 60 ? '#ff8a00' : v > 0 ? '#ffd400' : '#2ecc71';
-      ctx.fillRect(x + 56, by, (w - 68) * (v / 100), 7);
+      ctx.fillRect(x + 62, by, (w - 74) * (v / 100), 9);
     });
   }
 

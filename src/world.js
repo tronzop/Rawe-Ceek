@@ -2,13 +2,14 @@
 // It knows nothing about the canvas or audio; it reports interesting moments
 // through `emit(event, payload)` so the presentation layer can react.
 import {
-  COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SC_GAME, SCORING, SCORING_EXTRA, SLIPSTREAM,
-  SPAWN, SPEED, START, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WEATHER, WORLD,
+  COMPOUNDS, COMPOUND_ORDER, DAMAGE, ERS, GP, HITBOX, PIT, PITGAME, PLAYER, RIVAL_AI, SAFETY_CAR, SC_GAME, SCORING, SCORING_EXTRA, SLIPSTREAM,
+  SPAWN, SPEED, START, STORM, TEAMMATE, TYRES, TYRE_TEMP, VENUES, WARN, WEATHER, WORLD,
 } from './config.js';
 import {
   baseSpeed, bestCompound, clamp, gpsCompleted, gripFactor, lerp, nextPitWindowIn, pick, pickHazard, pitWindowOpen, rand, rectCircleGap,
   rectEllipseGap, rectGap, playerSpeed, wrongForWeather, spawnInterval, tempGrip, towFactor, venueIndexAt, wearDelta, judgeWheel, sweepPos, stopSummary,
   contactOutcome, damageEffects, lightsFullAt, lightsLit, totalDamage, weaveBonus, weaveHeat, weaveZone,
+  carHitParts, foldY, freeLanes, partsGap, partsOverlap, pickInLanes, rectsBounds,
 } from './logic.js';
 import { EMPTY_RUN } from './career.js';
 import { DRIVERS, LEGEND_BONUS, LEGEND_CHANCE, TEAMS, teamOf } from './grid.js';
@@ -30,6 +31,12 @@ export function pickDriver(teammate, teamId = DEFAULT_CAR) {
 }
 
 let nextId = 1;
+/** Where the car sits across the screen: further back on narrow (phone-portrait-ish) aspects so more track shows ahead. */
+export const playerXFor = (width, height) => width * (width / height < 1.5 ? WORLD.playerXNarrow : WORLD.playerX);
+/** Seconds the world holds still on the moment of impact before the tumble plays (the crash freeze-frame). */
+export const CRASH_FREEZE = 0.4;
+/** What each score source is called in World.run.scoreBy. */
+export const SCORE_SOURCES = ['distance', 'passes', 'close', 'pit', 'gp', 'other'];
 
 export class World {
   /** `car` is an entry from cars.js (or its id); it decides the livery, the handling and who your team-mate is. */
@@ -52,7 +59,7 @@ export class World {
     this.width = width;
     this.height = height;
     // a crashed car keeps tumbling from where it was, and a car in the pit lane stays in it
-    if (!this.gameOver) this.player.x = width * WORLD.playerX;
+    if (!this.gameOver) this.player.x = playerXFor(width, height);
     if (!this.pit.inLane && !this.gameOver) this.player.y = clamp(this.player.y, this.trackTop, this.trackBottom);
   }
 
@@ -74,6 +81,11 @@ export class World {
     this.particles = [];
     this.popups = [];
     this.spawnTimer = 1.2;
+    this.breather = 0; // seconds of no spawns left (after the chequered flag)
+    this.warnings = []; // edge warnings for hazards about to come on screen (see updateWarnings)
+    this.crashCause = null; // why the race ended (see crash()); the retirement screen explains it
+    this.crashShapes = null; // both hitboxes at the moment of impact, outlined during the freeze-frame
+    this.cliffAt = null; // race time the current set of tyres went over the cliff
     this.drsTimer = rand(SPAWN.drsEvery.min, SPAWN.drsEvery.max);
     this.rain = 0; // 0..1 track wetness
     this.raining = false;
@@ -85,7 +97,7 @@ export class World {
     this.ers = { charge: ERS.max, boosting: false };
     this.pit = { open: false, wasOpen: false, inLane: false, phase: 'none', timer: 0, stopFor: 0, slow: false, stops: 0, requested: false, game: null, cooldown: 0 };
     this.player = {
-      x: this.width * WORLD.playerX,
+      x: playerXFor(this.width, this.height),
       y: (this.trackTop + this.trackBottom) / 2,
       vy: 0,
       throttle: 1,
@@ -126,6 +138,8 @@ export class World {
     this.stats = { maxSpeed: 0 };
     this.run = EMPTY_RUN();
     this.run.car = this.car.id;
+    // where the score came from, for the retirement screen's breakdown (distance is filled in every frame)
+    this.run.scoreBy = Object.fromEntries(SCORE_SOURCES.map((k) => [k, 0]));
     this.placeGrid();
   }
 
@@ -164,11 +178,20 @@ export class World {
   get racing() { return this.start.phase === 'go'; }
   get kmh() { return Math.round(this.speed * SPEED.kmhPerPx); }
   get intensity() { return clamp((this.speed - SPEED.base) / (SPEED.max - SPEED.base), 0, 1); }
-  get playerRect() {
+  /** The car's hit parts: a body block and a cockpit block (the air above the nose is not the car). */
+  get playerParts() {
     const p = this.player;
-    const w = PLAYER.width - PLAYER.hitboxInset.x * 2;
-    const h = PLAYER.height - PLAYER.hitboxInset.y * 2;
-    return { x: p.x - w / 2, y: p.y - h / 2, w, h };
+    return carHitParts(p.x, p.y, PLAYER.width, PLAYER.height, HITBOX.player);
+  }
+  /** Bounding box of the hit parts (overtake bookkeeping, layout). */
+  get playerRect() { return rectsBounds(this.playerParts); }
+  /** Hit parts of a rival or stranded car. */
+  hazardParts(hz) { return carHitParts(hz.x, hz.y, hz.w, hz.h, HITBOX.rival); }
+  /** Banks points and books them against a score source (World.run.scoreBy). */
+  addScore(pts, source = 'other') {
+    this.bonus += pts;
+    const by = this.run.scoreBy;
+    by[source] = (by[source] || 0) + pts;
   }
   pitCountdown() { return nextPitWindowIn(this.elapsed); }
 
@@ -236,8 +259,11 @@ export class World {
   // ----- main step -----
   update(dt, input) {
     if (this.gameOver) {
+      // the freeze-frame: everything holds on the impact (both hitboxes outlined), then the tumble
+      // plays, easing up from slow motion to full speed
       this.gameOverTime += dt;
-      this.updateCrashed(dt);
+      const t = this.gameOverTime - CRASH_FREEZE;
+      if (t > 0) this.updateCrashed(dt * clamp(0.4 + t, 0.4, 1));
       return;
     }
     this.elapsed += dt;
@@ -260,6 +286,7 @@ export class World {
     // no distance credit while serving a penalty: the stewards add it to your time
     if (this.penalty <= 0) this.distance += this.speed * dt * WORLD.metresPerPx;
     this.score = Math.floor(this.distance) + this.bonus;
+    this.run.scoreBy.distance = Math.floor(this.distance);
     this.stats.maxSpeed = Math.max(this.stats.maxSpeed, this.speed);
     this.shake = Math.max(0, this.shake - dt * 3);
     this.flash = Math.max(0, this.flash - dt * 2.5);
@@ -292,7 +319,7 @@ export class World {
         if (go) {
           s.reaction = s.sinceGo;
           if (!s.jumped && s.reaction <= START.reactionWindow) {
-            this.bonus += START.reactionBonus;
+            this.addScore(START.reactionBonus, 'other');
             this.run.greatStarts += 1;
             this.addPopup(this.player.x, this.player.y - 50, `+${START.reactionBonus} GREAT START`, '#2ecc71');
             this.emit('greatStart', { reaction: s.reaction });
@@ -361,7 +388,8 @@ export class World {
     if (done > this.gps) {
       this.gps = done;
       this.run.gps = done;
-      this.bonus += GP.finishBonus;
+      this.addScore(GP.finishBonus, 'gp');
+      this.breather = SPAWN.breather; // a moment to breathe (and read the flag) before the next round's traffic
       this.addPopup(this.player.x, this.player.y - 50, `+${GP.finishBonus} CHEQUERED`, '#fff');
       this.emit('chequered', { gp: done, bonus: GP.finishBonus, venue: this.venue.name });
     }
@@ -396,7 +424,7 @@ export class World {
         if (!go) sc.jumpArmed = true;
         else if (sc.jumpArmed) {
           sc.jump = 0;
-          this.bonus += SC_GAME.jumpBonus;
+          this.addScore(SC_GAME.jumpBonus, 'other');
           this.run.scJumps += 1;
           this.addPopup(this.player.x, this.player.y - 80, `+${SC_GAME.jumpBonus} JUMP`, '#2ecc71');
           this.emit('scJump');
@@ -477,7 +505,7 @@ export class World {
     let popY = this.player.y - 50;
     if (sc.clean) {
       this.run.scClean += 1;
-      this.bonus += SAFETY_CAR.restartBonus;
+      this.addScore(SAFETY_CAR.restartBonus, 'other');
       this.addPopup(this.player.x, popY, `+${SAFETY_CAR.restartBonus} CLEAN`, '#2ecc71');
       popY -= 26;
     }
@@ -490,7 +518,7 @@ export class World {
       if (warm) this.run.warmRestarts += 1;
       if (weaveBonusPts > 0) this.addPopup(this.player.x, popY, `+${weaveBonusPts} ${warm ? 'WARM TYRES' : 'WEAVE'}`, '#ffd400');
       else this.addPopup(this.player.x, popY, weaveZone(w.heat) === 'cold' ? 'COLD TYRES' : 'BLISTERED', weaveZone(w.heat) === 'cold' ? '#7df9ff' : '#ff3b3b');
-      this.bonus += weaveBonusPts;
+      this.addScore(weaveBonusPts, 'other');
       this.run.scWeaves += w.weaves;
     }
     sc.neutral = false;
@@ -572,6 +600,7 @@ export class World {
           if (g.hold <= 0) {
             const s = stopSummary(g.results);
             this.tyre = { compound: this.nextCompound, wear: 0, punctured: false, temp: 0 };
+            this.cliffAt = null;
             // boxing under the safety car: the weave starts again from these cold tyres when you rejoin
             if (this.sc.neutral) { this.sc.neutral = false; this.sc.weave = null; }
             if (totalDamage(this.player.parts) > 0) this.run.repairs += 1;
@@ -580,8 +609,8 @@ export class World {
             pit.slow = !s.clean;
             pit.stopFor = s.time;
             if (pit.slow) this.run.slowStops += 1;
-            if (s.record) { this.run.recordStops += 1; this.bonus += PITGAME.recordBonus; this.addPopup(p.x, p.y + 60, `+${PITGAME.recordBonus} RECORD STOP`, '#7df9ff'); }
-            else if (s.clean) { this.run.cleanStops += 1; this.bonus += PITGAME.cleanBonus; this.addPopup(p.x, p.y + 60, `+${PITGAME.cleanBonus} CLEAN STOP`, '#2ecc71'); }
+            if (s.record) { this.run.recordStops += 1; this.addScore(PITGAME.recordBonus, 'pit'); this.addPopup(p.x, p.y + 60, `+${PITGAME.recordBonus} RECORD STOP`, '#7df9ff'); }
+            else if (s.clean) { this.run.cleanStops += 1; this.addScore(PITGAME.cleanBonus, 'pit'); this.addPopup(p.x, p.y + 60, `+${PITGAME.cleanBonus} CLEAN STOP`, '#2ecc71'); }
             if (s.perfects === PITGAME.wheels.length) this.run.perfectStops += 1;
             pit.phase = 'exit';
             pit.timer = PIT.laneTravel * 0.55;
@@ -783,6 +812,7 @@ export class World {
         this.emit('tyresHot');
       }
     }
+    if (this.cliffAt === null && this.tyre.wear > TYRES.cliffStart) this.cliffAt = this.elapsed;
     if (this.tyre.punctured) {
       // limp mode: crawl until you pit (relative to the race: the field still streams past)
       this.speed = Math.min(this.speed, base * 0.55);
@@ -825,16 +855,22 @@ export class World {
   updateSpawns(dt) {
     // no new hazards on the grid or during the launch, while you are on the way in, in the lane, or in the grace moment after rejoining
     if (!this.racing || this.start.launch > 0 || this.pit.inLane || this.pit.requested || this.player.grace > 0) return;
+    // a breather after the chequered flag: the next round's traffic waits
+    if (this.breather > 0) { this.breather = Math.max(0, this.breather - dt); return; }
     // hazards come up by track covered, not by the clock: crawling home on a puncture is not a bullet hell
     this.spawnTimer -= dt * clamp(this.speed / baseSpeed(this.elapsed), 0.3, 1);
     if (this.spawnTimer <= 0) {
+      // the on-ramp: for a while after the launch the gaps start long and ease down to normal
+      const ramp = clamp((this.start.sinceGo - START.launchSeconds) / SPAWN.onRamp.seconds, 0, 1);
+      const interval = spawnInterval(this.elapsed) * lerp(SPAWN.onRamp.mult, 1, ramp);
       if (this.sc.active) {
         // bunched field: slow rivals you are not allowed to pass
-        this.spawnTimer = spawnInterval(this.elapsed) * rand(1.6, 2.4);
+        this.spawnTimer = interval * rand(1.6, 2.4);
         if (this.sc.phase === 'deployed' && !this.sc.neutral) this.spawnHazard('rival', { scRival: true });
       } else {
-        this.spawnTimer = spawnInterval(this.elapsed) * rand(0.75, 1.25);
-        this.spawnHazard(pickHazard(this.elapsed));
+        this.spawnTimer = interval * rand(0.75, 1.25);
+        // no fair lane for it right now (it would close the last gap): try again in a moment
+        if (!this.spawnHazard(pickHazard(this.elapsed))) this.spawnTimer = SPAWN.retry;
       }
     }
     this.drsTimer -= dt;
@@ -847,20 +883,42 @@ export class World {
   laneY(margin = 20) {
     return rand(this.trackTop + margin, this.trackBottom - margin);
   }
+  /**
+   * A fair y for a new hazard (see logic.freeLanes): never on top of another one and never closing
+   * the last gap the car fits through. `size`/`len` are its half height and half length, `closing`
+   * how fast it will come at you. Returns null when there is no fair lane.
+   */
+  fairY(x, size, len, closing) {
+    const p = this.player;
+    const lanes = freeLanes(this.hazards, x, p.x, this.speed, this.trackTop, this.trackBottom, {
+      size, len, closing, playerLen: this.playerRect.w,
+    });
+    return pickInLanes(lanes);
+  }
+  /** Spawn x off the right edge: far enough out that its edge warning shows for WARN.lead seconds first. */
+  spawnX(closing, extra = 0) {
+    return this.width + extra + Math.max(80, closing * WARN.lead);
+  }
 
+  /** Spawns a hazard of `type`; returns it, or null when there was no fair lane for it. */
   spawnHazard(type, opts = {}) {
     const right = this.width + 80;
     const t = this.elapsed;
+    const scrollV = this.speed;
+    let hz = null;
     switch (type) {
       case 'tyre': {
         const compound = pick(Object.values(COMPOUNDS));
-        const r = rand(16, 30) * (1 + Math.min(0.5, t / 240));
+        // a rare big one (always fatal like the rest, just harder to get round)
+        const big = Math.random() < SPAWN.bigTyreChance;
+        const r = rand(16, 30) * (big ? 1.5 : 1);
         const speedMul = compound.id === 'soft' ? 1.35 : compound.id === 'hard' ? 0.75 : 1;
+        const vx = -rand(60, 180) * speedMul;
+        const x = this.spawnX(scrollV - vx);
+        const y = this.fairY(x, r, r, scrollV - vx);
+        if (y === null) return null;
         // rolls toward the player with a bit of vertical drift, bounces off the kerbs
-        this.hazards.push({
-          id: nextId++, type, x: right, y: this.laneY(r), r, vx: -rand(60, 180) * speedMul, vy: rand(-90, 90),
-          spin: 0, compound, bounce: true,
-        });
+        hz = { id: nextId++, type, x, y, r, vx, vy: rand(-90, 90), spin: 0, compound, bounce: true, big };
         break;
       }
       case 'rival': {
@@ -875,29 +933,46 @@ export class World {
         const fromBehind = !opts.scRival && Math.random() < 0.25 && t > 20;
         const pace = rand(...RIVAL_AI.paceRange);
         const rel = fromBehind ? this.speed + rand(...RIVAL_AI.passMargin) : baseSpeed(t) * pace;
-        this.hazards.push({
-          id: nextId++, type, x: fromBehind ? -w / 2 - 20 : right + w, y: this.laneY(h), w, h, rel, pace, vy: 0,
+        // a car from behind starts far enough back for its mirror warning to show first
+        const x = fromBehind ? -w / 2 - Math.max(20, (rel - scrollV) * WARN.mirrorLead * 0.95) : right + w;
+        let y;
+        if (fromBehind) y = this.laneY(h);
+        else {
+          y = this.fairY(x, h / 2, w / 2, scrollV - rel);
+          if (y === null) return null;
+        }
+        hz = {
+          id: nextId++, type, x, y, w, h, rel, pace, vy: 0,
           // under the safety car rivals run at (about) its pace in absolute terms, not relative to you
           scPace: opts.scRival ? rand(...SAFETY_CAR.bunchSpread) : 0,
           team, driver, teammate, fromBehind, weave: !opts.scRival && Math.random() < 0.4, weavePhase: rand(0, 6.28), passed: false, frame: rand(0, 8),
           defend: !fromBehind && !teammate && Math.random() < RIVAL_AI.defendChance, brake: 0,
-        });
+        };
         break;
       }
       case 'oil': {
         const w = rand(90, 170);
         const h = rand(24, 42);
-        this.hazards.push({ id: nextId++, type, x: right + w, y: this.laneY(h), w, h, rel: 0, vy: 0 });
+        const x = this.spawnX(scrollV, w / 2) + w / 2;
+        const y = this.fairY(x, h / 2, w / 2, scrollV);
+        if (y === null) return null;
+        hz = { id: nextId++, type, x, y, w, h, rel: 0, vy: 0 };
         break;
       }
       case 'debris': {
-        const r = rand(7, 12);
-        this.hazards.push({ id: nextId++, type, x: right, y: this.laneY(r), r, vx: -rand(0, 40), vy: rand(-20, 20), spin: 0, bounce: false });
+        const r = rand(9, 14);
+        const vx = -rand(0, 40);
+        const x = this.spawnX(scrollV - vx);
+        const y = this.fairY(x, r, r, scrollV - vx);
+        if (y === null) return null;
+        hz = { id: nextId++, type, x, y, r, vx, vy: rand(-20, 20), spin: 0, bounce: false };
         break;
       }
       default:
         break;
     }
+    if (hz) this.hazards.push(hz);
+    return hz;
   }
   spawnDrs() {
     const h = 64;
@@ -990,9 +1065,11 @@ export class World {
         }
       }
 
-      // cull
+      // cull: gone off the left, or pulling away off the right. Hazards on their way in can start well
+      // out to the right (see spawnX) and a car attacking from behind well back on the left.
       const margin = 260;
-      if (hz.x < -margin || hz.x > this.width + margin + 600) continue;
+      const screenV = (hz.type === 'tyre' || hz.type === 'debris' ? hz.vx : hz.rel) - scrollV;
+      if ((hz.x < -margin && !(hz.fromBehind && hz.x > -margin - 1200)) || hz.x > this.width + margin + (screenV < 0 ? 3000 : 600)) continue;
 
       // interactions — none while boxing, merging back, or in the grace moment after rejoining
       // (the neutralised car is untouchable: the field is bunched and the stewards are watching)
@@ -1009,6 +1086,46 @@ export class World {
       survivors.push(hz);
     }
     this.hazards = survivors;
+    if (!this.gameOver) this.updateWarnings();
+  }
+
+  /**
+   * Edge warnings: every hazard about to come on from the right (within WARN.lead seconds of the
+   * edge) gets a chevron at the height it will arrive at, and a car attacking from behind gets a
+   * mirror chevron on the left. The renderer draws `this.warnings`; 'warnShown' fires once per hazard.
+   */
+  updateWarnings() {
+    const out = [];
+    const W = this.width;
+    const scrollV = this.speed;
+    for (const hz of this.hazards) {
+      if (hz.type === 'drs' || hz.dead) continue;
+      const half = hz.r ?? hz.w / 2;
+      const v = hz.type === 'tyre' || hz.type === 'debris' ? hz.vx : hz.rel;
+      let side = null, eta = 0;
+      if (hz.fromBehind) {
+        // in the mirrors: off the left edge, or on screen but still behind your car
+        const behind = hz.x + half < this.player.x - PLAYER.width / 2;
+        if (!behind) continue;
+        eta = Math.max(0, (0 - (hz.x + half)) / Math.max(1, v - scrollV));
+        if (eta >= WARN.mirrorLead) continue;
+        side = 'left';
+      } else {
+        if (hz.x - half <= W) continue;
+        eta = (hz.x - half - W) / Math.max(1, scrollV - v);
+        if (eta >= WARN.lead) continue;
+        side = 'right';
+      }
+      const r = hz.r ?? hz.h / 2;
+      const y = hz.vy && hz.bounce ? foldY(hz.y, hz.vy, eta, this.trackTop + r, this.trackBottom - r) : hz.y;
+      out.push({ hz, side, eta, y });
+      if (!hz.warned) {
+        hz.warned = true;
+        hz.warnedAt = this.elapsed;
+        this.emit('warnShown', { type: hz.type, side, big: !!hz.big });
+      }
+    }
+    this.warnings = out;
   }
 
   onOvertake(hz) {
@@ -1032,22 +1149,31 @@ export class World {
     if (this.sc.restartTimer > 0) { pts *= SCORING_EXTRA.restartMultiplier; label = `+${pts} RESTART`; color = '#2ecc71'; }
     if (hz.teammate) { pts += TEAMMATE.bonus; label = `+${pts} MULTI 21`; color = '#e10600'; this.run.teammatePasses += 1; }
     if (hz.driver?.legend) { pts += LEGEND_BONUS; label = `+${pts} LEGEND`; color = '#d4af37'; this.run.legendPasses = (this.run.legendPasses || 0) + 1; }
-    this.bonus += pts;
+    this.addScore(pts, 'passes');
     this.addPopup(p.x, p.y - 44, label, color);
     if (hz.teammate) this.emit('teammate', { count: this.run.teammatePasses, driver: hz.driver });
     else this.emit('overtake', { count: this.overtakes, team: hz.team.name, driver: hz.driver });
   }
 
   collide(hz, prect, p, dt = 1 / 60) {
+    // everything is measured against the car's hit parts (body + cockpit), close calls included:
+    // a tyre bouncing through the air above your nose is a miss, and a close one
+    const parts = carHitParts(p.x, p.y, PLAYER.width, PLAYER.height, HITBOX.player);
     let gap;
+    let other = null; // the rival's parts, for rival and stranded cars
     if (hz.type === 'tyre' || hz.type === 'debris') {
-      gap = rectCircleGap(prect, hz.x, hz.y, hz.r);
+      gap = partsGap(parts, (r) => rectCircleGap(r, hz.x, hz.y, hz.r));
     } else if (hz.type === 'oil') {
       // the slick is drawn as an ellipse: clipping the corner of its bounding box is not a spin
       // (radii a touch inside the drawn edge, which is feathered)
-      gap = rectEllipseGap(prect, hz.x, hz.y, hz.w * 0.42, hz.h * 0.42);
+      gap = partsGap(parts, (r) => rectEllipseGap(r, hz.x, hz.y, hz.w * 0.42, hz.h * 0.42));
+    } else if (hz.type === 'drs') {
+      const gate = { x: hz.x - hz.w / 2, y: hz.y - hz.h / 2, w: hz.w, h: hz.h };
+      gap = partsGap(parts, (r) => rectGap(r, gate));
     } else {
-      gap = rectGap(prect, { x: hz.x - hz.w / 2, y: hz.y - hz.h / 2, w: hz.w, h: hz.h });
+      other = this.hazardParts(hz);
+      gap = Infinity;
+      for (const q of other) gap = Math.min(gap, partsGap(parts, (r) => rectGap(r, q)));
     }
 
     if (gap > 0) {
@@ -1056,7 +1182,7 @@ export class World {
         this.closeCalls += 1;
         const teammate = hz.type === 'rival' && hz.teammate;
         const pts = teammate ? SCORING_EXTRA.closeCallTeammate : SCORING.closeCall;
-        this.bonus += pts;
+        this.addScore(pts, 'close');
         this.addPopup(hz.x, hz.y - 30, `+${pts}`, teammate ? '#e10600' : '#7df9ff');
         this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver });
       }
@@ -1065,11 +1191,12 @@ export class World {
 
     switch (hz.type) {
       case 'tyre':
+        this.crash(hz, { kind: 'tyre', compound: hz.compound?.label?.toLowerCase() || null, big: !!hz.big, closingKmh: Math.round(Math.max(0, this.speed - hz.vx) * SPEED.kmhPerPx) });
+        break;
       case 'stranded':
-        this.crash(hz);
+        this.crash(hz, { kind: 'stranded', closingKmh: Math.round(this.speed * SPEED.kmhPerPx) });
         break;
       case 'rival': {
-        const rect = { x: hz.x - hz.w / 2, y: hz.y - hz.h / 2, w: hz.w, h: hz.h };
         if (hz.contactCd > 0) {
           // still sliding along the same car: one hit per touch. The touch lasts until the cars are
           // apart, and they ease apart meanwhile, so the end of the cooldown is not a second, deeper hit.
@@ -1079,21 +1206,24 @@ export class World {
           hz.y -= dir * 60 * dt;
           break;
         }
-        const ox = Math.min(prect.x + prect.w, rect.x + rect.w) - Math.max(prect.x, rect.x);
-        const oy = Math.min(prect.y + prect.h, rect.y + rect.h) - Math.max(prect.y, rect.y);
+        // judged on the touching parts: cockpit-on-body is a glancing rub, body-on-body square on
+        const { ox, oy } = partsOverlap(parts, other);
+        const h = rectsBounds(parts).h;
         const ahead = hz.x > p.x;
         // how fast the two cars were coming together (screen velocity of the rival is rel - speed)
         const closing = Math.max(0, ahead ? this.speed - hz.rel : hz.rel - this.speed);
-        const outcome = contactOutcome({ ahead, ox, oy, h: prect.h, closing, launch: !this.racing || this.start.launch > 0, parts: p.parts });
-        if (outcome === 'crash') this.crash(hz);
-        else this.contact(hz, outcome, { ahead, oy, sideRub: oy < prect.h * 0.5 });
+        const out = contactOutcome({ ahead, ox, oy, h, closing, launch: !this.racing || this.start.launch > 0, parts: p.parts });
+        if (out.crash) {
+          const kind = out.reason === 'terminal' ? 'terminal-part' : out.reason === 'rear' ? 'rear' : 'nose';
+          this.crash(hz, { kind, part: out.part, reason: out.reason, closingKmh: Math.round(closing * SPEED.kmhPerPx) });
+        } else this.contact(hz, out.part, { ahead, oy, sideRub: oy < h * 0.5 });
         break;
       }
       case 'debris':
         hz.dead = true;
         // no wing left to take it: the carbon goes under the car
-        if (p.parts.wing >= 100) { this.crash(hz); break; }
-        this.hurt('wing', DAMAGE.wingPerDebris, { driver: null, cause: 'debris' });
+        if (p.parts.wing >= 100) { this.crash(hz, { kind: 'debris', part: 'wing' }); break; }
+        this.hurt('wing', DAMAGE.wingPerDebris, { driver: null, cause: 'debris', side: 'front' });
         this.shake = 0.5;
         this.spawnSpark(hz.x, hz.y, 10);
         break;
@@ -1111,7 +1241,7 @@ export class World {
           hz.taken = true;
           hz.dead = true;
           this.ers.charge = Math.min(ERS.max, this.ers.charge + ERS.drsRefill * this.car.ers);
-          this.bonus += 20;
+          this.addScore(20, 'other');
           this.addPopup(hz.x, hz.y - 40, '+20 DRS', '#2ecc71');
           this.emit('drs');
         }
@@ -1149,7 +1279,7 @@ export class World {
     }
     this.spawnSpark(p.x + (ahead ? PLAYER.width * 0.45 : -PLAYER.width * 0.3), p.y, 8);
     this.run.contacts += 1;
-    this.hurt(part, amount, { driver: hz.driver, cause: 'contact' });
+    this.hurt(part, amount, { driver: hz.driver, cause: 'contact', side: sideRub ? 'side' : ahead ? 'front' : 'rear' });
   }
   /** Applies damage to a part and reports it (with `lost` when the part just reached 100). Tough cars take less. */
   hurt(part, rawAmount, ctx) {
@@ -1158,14 +1288,34 @@ export class World {
     const before = p.parts[part];
     p.parts[part] = Math.min(100, before + amount);
     this.shake = Math.max(this.shake, 0.35 + amount / 120);
-    this.emit('contact', { ...ctx, part, amount, value: p.parts[part], total: this.damage, lost: p.parts[part] >= 100 && before < 100 });
+    // what it cost, right at the car: "WING 45%" (or the part gone)
+    const lost = p.parts[part] >= 100 && before < 100;
+    const label = part === 'wing' ? 'WING' : 'FLOOR';
+    this.addPopup(p.x + PLAYER.width * 0.1, p.y - PLAYER.height * 0.9, lost ? `${label} GONE` : `${label} ${Math.round(p.parts[part])}%`, lost ? '#ff3b3b' : '#ff8a00');
+    this.emit('contact', { side: 'front', ...ctx, part, amount, value: p.parts[part], total: this.damage, lost });
   }
 
-  crash(hz) {
+  /**
+   * The race is over. `info` says why (see logic.describeCrash): `kind` is tyre | nose | rear |
+   * terminal-part | stranded | debris, plus the part, the closing speed and so on.
+   */
+  crash(hz, info = {}) {
     if (this.gameOver) return;
     this.gameOver = true;
+    const p = this.player;
+    this.crashCause = {
+      kind: info.kind || hz.type, driver: hz.driver || null, closingKmh: info.closingKmh ?? null, part: info.part || null, reason: info.reason || null,
+      compound: info.compound || null, big: !!info.big, at: this.elapsed, cliffAt: this.cliffAt, punctured: this.tyre.punctured, stops: this.pit.stops,
+    };
+    // both hitboxes as they were on impact, for the freeze-frame outline
+    this.crashShapes = {
+      player: carHitParts(p.x, p.y, PLAYER.width, PLAYER.height, HITBOX.player),
+      rects: hz.type === 'rival' || hz.type === 'stranded' ? this.hazardParts(hz) : [],
+      circle: hz.r ? { x: hz.x, y: hz.y, r: hz.r } : null,
+    };
     this.score = Math.floor(this.distance) + this.bonus; // anything banked earlier this frame counts
     Object.assign(this.run, { metres: this.distance, score: this.score, overtakes: this.overtakes, stops: this.pit.stops });
+    this.run.scoreBy.distance = Math.floor(this.distance);
     this.gameOverTime = 0;
     this.player.alive = false;
     this.shake = 1.2;
@@ -1179,7 +1329,7 @@ export class World {
     for (let i = 0; i < 14; i++) {
       this.particles.push({ kind: 'carbon', x: this.player.x + rand(-30, 30), y: this.player.y, vx: rand(-200, 300), vy: rand(-350, -60), r: rand(3, 7), life: rand(0.8, 1.6), age: 0, spin: rand(0, 6) });
     }
-    this.emit('crash', { with: hz.type, score: this.score, driver: hz.driver });
+    this.emit('crash', { with: hz.type, score: this.score, driver: hz.driver, cause: this.crashCause });
   }
 
   updateCrashed(dt) {

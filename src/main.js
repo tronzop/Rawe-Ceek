@@ -10,7 +10,7 @@ import { Career, TROPHIES } from './career.js';
 import { DRIVERS, OPTIONAL_CLIPS, clipLine, resolveClip } from './grid.js';
 import { CARS, STAT_BARS, carById, carQuirks, statBars, teamOfCar } from './cars.js';
 import { drawLivery } from './livery.js';
-import { clamp, formatDistance, lerp, positionLabel } from './logic.js';
+import { clamp, describeCrash, formatDistance, lerp, positionLabel } from './logic.js';
 
 const $ = (sel) => document.querySelector(sel);
 const canvas = $('#game');
@@ -33,6 +33,13 @@ const PORTRAITS = {
 };
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
+// Debug switches: ?seed=N makes the run repeatable (seeded Math.random), ?hitbox=1 strokes every hit part
+const params = new URLSearchParams(location.search);
+if (params.has('seed')) {
+  let a = (Number(params.get('seed')) || 1) >>> 0;
+  Math.random = () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
 const input = new Input(canvas);
 // Phones and tablets get the touch pad, touch wording on the menus and touch coach tips.
 const touch = detectTouch();
@@ -44,6 +51,7 @@ const assetsAvailable = fetch('/api/assets', { cache: 'no-store' }).then((r) => 
 audio.setAvailable(assetsAvailable);
 const renderer = new Renderer(canvas, assets);
 renderer.touch = touch;
+renderer.debugHitbox = params.get('hitbox') === '1';
 // The car you drive: remembered between visits, chosen on the title screen.
 let car = carById((() => { try { return localStorage.getItem(STORAGE_KEYS.car); } catch { return null; } })());
 let career = Career.load();
@@ -135,6 +143,18 @@ function gameOver(payload = {}) {
   renderCareer();
   // fill the panel
   $('#finalScore').textContent = String(world.score);
+  // why it ended and how to survive it next time, then where the points came from
+  const why = describeCrash(world.crashCause);
+  $('#overCause').innerHTML = world.crashCause
+    ? `<b>${escapeHtml(why.line)}</b>${why.extra ? `<em>${escapeHtml(why.extra)}</em>` : ''}${why.tip ? `<span>${escapeHtml(why.tip)}</span>` : ''}`
+    : '';
+  const by = world.run.scoreBy || {};
+  const total = Object.values(by).reduce((a, b) => a + b, 0);
+  const parts = SCORE_PARTS.filter(([k]) => by[k] > 0);
+  $('#overBreakdown').innerHTML = total > 0
+    ? `<div class="bar">${parts.map(([k, , c]) => `<i style="--c:${c};flex:${by[k]}" title="${k}"></i>`).join('')}</div>`
+      + `<div class="breakdown-key">${parts.map(([k, label, c]) => `<span style="--c:${c}">${label}<b>${by[k]}</b></span>`).join('')}</div>`
+    : '';
   $('#finalStats').innerHTML = [
     ['Car', world.car.name],
     ['Distance', formatDistance(world.distance)],
@@ -152,13 +172,13 @@ function gameOver(payload = {}) {
   $('#nameInput').value = Leaderboard.playerName();
   $('#submitStatus').textContent = '';
   $('#submitScore').disabled = false;
-  // reveal after the crash animation has played
+  // reveal after the crash animation has played (the freeze-frame on the impact, then the tumble)
   setTimeout(() => {
     show('over');
     requestAnimationFrame(() => screens.over.classList.add('revealed'));
     ($('#nameInput').value ? $('#submitScore') : $('#nameInput')).focus();
     refreshLeaderboard();
-  }, 1300);
+  }, 1700);
 }
 
 // ---------- world events → presentation ----------
@@ -234,6 +254,11 @@ function say(names, opts = {}, kind = null, ctx) {
 function toast(text, color, sub) {
   hud.toast = { text, color, sub, age: 0, dur: sub ? 2.2 : 1.6 };
 }
+/** The retirement screen's score breakdown: World.run.scoreBy key, label, colour. */
+const SCORE_PARTS = [
+  ['distance', 'Distance', '#c9ced9'], ['passes', 'Overtakes', '#ffd400'], ['close', 'Close calls', '#7df9ff'],
+  ['pit', 'Pit stops', '#2ecc71'], ['gp', 'Grands Prix', '#ffffff'], ['other', 'Bonuses', '#ff8a00'],
+];
 const WHEEL_NAMES = { FL: 'front left', FR: 'front right', RL: 'rear left', RR: 'rear right' };
 function onWorldEvent(evt, payload = {}) {
   switch (evt) {

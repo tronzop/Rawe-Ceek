@@ -82,6 +82,19 @@ button:disabled { opacity: 0.5; cursor: default; }
 .final { display: flex; align-items: baseline; gap: 8px; margin: 6px 0 12px; }
 .final span { font: 900 64px var(--mono); color: var(--yellow); letter-spacing: -0.02em; }
 .final small { color: var(--muted); }
+/* the retirement screen explains the crash: what happened, how to survive it, where the points came from */
+.cause { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--red); background: rgba(225,6,0,0.08); border-radius: 0 8px 8px 0; font-size: 14px; line-height: 1.35; }
+.cause:empty { display: none; }
+.cause b { display: block; color: var(--text); }
+.cause span { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
+.cause em { display: block; color: var(--yellow); font-style: normal; font-size: 13px; margin-top: 4px; }
+.breakdown { margin: 0 0 12px; }
+.breakdown:empty { display: none; }
+.breakdown .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: rgba(255,255,255,0.06); margin: 0 0 6px; }
+.breakdown .bar i { display: block; height: 100%; min-width: 2px; background: var(--c); }
+.breakdown-key { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+.breakdown-key span::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; background: var(--c); vertical-align: -1px; }
+.breakdown-key b { color: var(--text); font-weight: 600; margin-left: 3px; }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; font-size: 13px; color: var(--muted); }
 .stats div { display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.06); padding: 4px 0; }
 .stats b { color: var(--text); }

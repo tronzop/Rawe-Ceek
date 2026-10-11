@@ -11,6 +11,7 @@ export const WORLD = {
   trackBottom: 0.87,
   // Where the player car sits horizontally (fraction of width).
   playerX: 0.22,
+  playerXNarrow: 0.16, // on narrow screens (width/height below 1.5) the car sits further back, so more track shows ahead
   // 1 logical px == this many metres for the odometer.
   metresPerPx: 0.08,
 };
@@ -23,6 +24,29 @@ export const PLAYER = {
   verticalSpeed: 330, // px/s at full grip
   throttleRange: { min: 0.72, max: 1.22 }, // multiplier on base speed (lift vs push)
   throttleLerp: 3.5, // how fast throttle follows the input
+};
+
+/**
+ * Car-shaped hitboxes (see logic.carHitParts): a low body block (floor, sidepods, wheels, nose) and a
+ * cockpit block above it (halo, airbox, engine cover and the rear wing), as fractions of the drawn
+ * car's width and height, centred on the car. The air above the nose is not part of the car.
+ * `player` follows the sprite sheet (tall rear wing), `rival` the vector car (no rear wing to speak of).
+ */
+export const HITBOX = {
+  player: {
+    body: { x0: -0.46, x1: 0.46, y0: -0.08, y1: 0.33 },
+    cockpit: { x0: -0.46, x1: 0.1, y0: -0.33, y1: -0.08 },
+  },
+  rival: {
+    body: { x0: -0.46, x1: 0.49, y0: -0.2, y1: 0.47 },
+    cockpit: { x0: -0.16, x1: 0.08, y0: -0.45, y1: -0.2 },
+  },
+};
+
+/** Edge warnings for hazards that are about to come on screen (render.drawIncoming). */
+export const WARN = {
+  lead: 1.0, // seconds before a hazard reaches the right edge that its chevron appears
+  mirrorLead: 1.2, // seconds of mirror warning on the left edge for a car attacking from behind
 };
 
 export const SPEED = {
@@ -97,6 +121,13 @@ export const SPAWN = {
   drsEvery: { min: 9, max: 16 },
   // Relative weights of hazard types; shifted over time in logic.pickHazard.
   weights: { tyre: 5, rival: 2.2, oil: 1.6, debris: 1.4 },
+  // Fair spawns (logic.freeLanes): a new hazard may not close the last gap the car fits through.
+  minGap: 2.2 * (PLAYER.height - PLAYER.hitboxInset.y * 2), // px of clear track the car needs (2.2 × its hitbox height)
+  wallSlack: 0.35, // s: hazards crossing your line this close together in time count as one wall
+  retry: 0.2, // s to wait before trying again when there is no fair lane
+  onRamp: { seconds: 15, mult: 1.6 }, // after the launch the interval starts this much longer and eases to normal
+  breather: 3, // s of no spawns after the chequered flag
+  bigTyreChance: 0.08, // share of loose tyres that are a big one (r × 1.5)
 };
 
 export const SCORING = {

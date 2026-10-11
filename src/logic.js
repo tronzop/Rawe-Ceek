@@ -90,6 +90,124 @@ export function nextPitWindowIn(elapsed) {
   return phase < PIT.openFor ? 0 : PIT.interval - phase;
 }
 
+// ----- car-shaped hitboxes -----
+import { HITBOX } from './config.js';
+/**
+ * The hit parts of a car drawn w×h centred on (x, y): `[body, cockpit]` rects (see config.HITBOX).
+ * `profile` is HITBOX.player (the sprite) or HITBOX.rival (the vector car).
+ */
+export function carHitParts(x, y, w, h, profile = HITBOX.player) {
+  const r = (b) => ({ x: x + b.x0 * w, y: y + b.y0 * h, w: (b.x1 - b.x0) * w, h: (b.y1 - b.y0) * h });
+  return [r(profile.body), r(profile.cockpit)];
+}
+/** Bounding rect of a list of rects. */
+export function rectsBounds(rects) {
+  const x0 = Math.min(...rects.map((r) => r.x)), y0 = Math.min(...rects.map((r) => r.y));
+  const x1 = Math.max(...rects.map((r) => r.x + r.w)), y1 = Math.max(...rects.map((r) => r.y + r.h));
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+/** Smallest gap between any of `parts` and a shape tested by `gapFn(rect)` (<= 0 when touching). */
+export function partsGap(parts, gapFn) {
+  let g = Infinity;
+  for (const r of parts) g = Math.min(g, gapFn(r));
+  return g;
+}
+/**
+ * Overlap between two sets of parts: the largest x and y overlap over the touching pairs
+ * (`ox`/`oy` are 0 when nothing touches). Used to judge a touch the same way the hit was found.
+ */
+export function partsOverlap(a, b) {
+  let ox = 0, oy = 0, hit = false;
+  for (const p of a) {
+    for (const q of b) {
+      if (!rectsOverlap(p, q)) continue;
+      hit = true;
+      ox = Math.max(ox, Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x));
+      oy = Math.max(oy, Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y));
+    }
+  }
+  return { hit, ox, oy };
+}
+
+/** y after `t` seconds at `vy`, bouncing off lo/hi (how a loose tyre comes off the kerbs). */
+export function foldY(y, vy, t, lo, hi) {
+  const span = hi - lo;
+  if (span <= 0) return lo;
+  let u = (y + vy * t - lo) % (2 * span);
+  if (u < 0) u += 2 * span;
+  return lo + (u <= span ? u : 2 * span - u);
+}
+
+/**
+ * Fair spawns. Where can a new hazard's centre go so that the car still has a gap it fits through?
+ * Every hazard is turned into the stretch of time it spends crossing the car's line (`playerX`,
+ * car `opts.playerLen` long) at its closing speed; the ones crossing at about the same time as the
+ * new one (within `opts.slack` s) are a wall, and their y extents (projected to that moment, folded
+ * at the kerbs) are blocked. Returns `[lo, hi]` intervals for the new centre: never on top of an
+ * existing hazard, and always leaving a gap of at least `opts.minGap` px. Empty when there is none.
+ *  - `opts.size`: half the new hazard's height (r, or h/2); `opts.len`: half its length along the track
+ *  - `opts.closing`: px/s it will close on the car at
+ */
+export function freeLanes(hazards, spawnX, playerX, scrollV, trackTop, trackBottom, opts = {}) {
+  const { size = 20, len = size, closing = scrollV, minGap = SPAWN.minGap, slack = SPAWN.wallSlack, playerLen = 140, step = 4 } = opts;
+  const half = playerLen / 2;
+  const c0 = Math.max(1, closing);
+  const t0 = (spawnX - len - (playerX + half)) / c0;
+  const t1 = (spawnX + len - (playerX - half)) / c0;
+  const blocked = [];
+  for (const hz of hazards) {
+    if (hz.type === 'drs' || hz.dead) continue;
+    const hl = hz.r ?? hz.w / 2;
+    const hh = hz.r ?? hz.h / 2;
+    const v = hz.type === 'tyre' || hz.type === 'debris' ? hz.vx : (hz.rel ?? 0);
+    const c = scrollV - v;
+    if (c <= 1) continue; // not coming to you (or leaving you behind)
+    const a = (hz.x - hl - (playerX + half)) / c;
+    const b = (hz.x + hl - (playerX - half)) / c;
+    if (b < 0 || b < t0 - slack || a > t1 + slack) continue;
+    // where it will be when the new hazard gets there (rivals that weave sweep a band)
+    const tm = clamp((t0 + t1) / 2, Math.max(0, a), Math.max(0, b));
+    const y = hz.vy ? foldY(hz.y, hz.vy, tm, trackTop + hh, trackBottom - hh) : hz.y;
+    const sweep = hz.weave ? 44 : hz.defend ? 30 : 0;
+    blocked.push([y - hh - sweep, y + hh + sweep]);
+  }
+  // gaps left on the track once a hazard of half-height `size` sits at `yc` (null: as it is now)
+  const widest = (yc) => {
+    const spans = blocked.slice();
+    if (yc !== null) spans.push([yc - size, yc + size]);
+    spans.sort((p, q) => p[0] - q[0]);
+    let best = 0, edge = trackTop;
+    for (const [lo, hi] of spans) {
+      if (lo > edge) best = Math.max(best, lo - edge);
+      edge = Math.max(edge, hi);
+    }
+    return Math.max(best, trackBottom - edge);
+  };
+  const out = [];
+  if (widest(null) < minGap) return out;
+  let run = null;
+  for (let yc = trackTop + size; yc <= trackBottom - size + 1e-6; yc += step) {
+    const onTop = blocked.some(([lo, hi]) => yc + size > lo && yc - size < hi);
+    const ok = !onTop && widest(yc) >= minGap;
+    if (ok) { if (run) run[1] = yc; else run = [yc, yc]; }
+    else if (run) { out.push(run); run = null; }
+  }
+  if (run) out.push(run);
+  return out;
+}
+/** Picks a y from freeLanes intervals, uniformly over their total length; null when there are none. */
+export function pickInLanes(lanes, r = Math.random()) {
+  const total = lanes.reduce((s, [lo, hi]) => s + (hi - lo) + 1, 0);
+  if (!lanes.length) return null;
+  let acc = r * total;
+  for (const [lo, hi] of lanes) {
+    const len = hi - lo + 1;
+    if (acc <= len) return lo + Math.min(hi - lo, acc);
+    acc -= len;
+  }
+  return lanes[lanes.length - 1][1];
+}
+
 /** Axis-aligned rect vs circle. */
 export function rectCircle(rect, cx, cy, r) {
   return rectCircleGap(rect, cx, cy, r) <= 0;
@@ -253,10 +371,15 @@ export const lightsFullAt = () => START.lights * START.lightInterval;
 export function contactOutcome({ ahead, ox, oy, h, closing, launch, parts }) {
   const sideRub = oy < h * 0.5;
   const part = sideRub || !ahead ? 'floor' : 'wing';
-  if (parts[part] >= 100) return 'crash';
-  if (launch || sideRub) return part;
-  if (ahead && closing <= DAMAGE.maxClosing && ox <= DAMAGE.frontalDepth) return part;
-  return 'crash';
+  // `reason` is what the retirement screen explains: terminal (part already gone), hard (too fast),
+  // deep (nose buried too far in), rear (run into from behind); survivable: launch, side, gentle
+  if (parts[part] >= 100) return { crash: true, part, reason: 'terminal' };
+  if (launch) return { crash: false, part, reason: 'launch' };
+  if (sideRub) return { crash: false, part, reason: 'side' };
+  if (!ahead) return { crash: true, part, reason: 'rear' };
+  if (closing > DAMAGE.maxClosing) return { crash: true, part, reason: 'hard' };
+  if (ox > DAMAGE.frontalDepth) return { crash: true, part, reason: 'deep' };
+  return { crash: false, part, reason: 'gentle' };
 }
 /** Throttle ceiling lost to wing damage and the grip multiplier from floor damage. */
 export function damageEffects(parts) {
@@ -267,6 +390,56 @@ export function damageEffects(parts) {
 }
 /** Single 0..100 figure for the damage meter: the worst part. */
 export const totalDamage = (parts) => Math.max(parts.wing, parts.floor);
+
+const PART_NAME = { wing: 'front wing', floor: 'floor' };
+/**
+ * The retirement screen's explanation of a crash (World.crashCause): `line` says what happened,
+ * `tip` how to survive it next time, `extra` (or null) points at the tyres when they were the
+ * real reason. Every kind reads differently so the player learns the rule that got them.
+ */
+export function describeCrash(cause) {
+  if (!cause) return { line: 'Retired.', tip: '', extra: null };
+  const who = cause.driver ? cause.driver.short || cause.driver.name : 'the car ahead';
+  const kmh = cause.closingKmh ? `+${cause.closingKmh} km/h closing` : 'speed';
+  let line, tip;
+  switch (cause.kind) {
+    case 'tyre':
+      line = `Loose ${cause.compound ? `${cause.compound} ` : ''}tyre${cause.big ? ' — a big one' : ''}. A rolling tyre is always fatal.`;
+      tip = 'Watch the right edge: a chevron in the tyre\'s colour shows where it will come on.';
+      break;
+    case 'nose':
+      line = cause.reason === 'deep'
+        ? `Nose buried in ${who}'s gearbox. Too deep to be a touch.`
+        : `Nose into ${who}'s gearbox at ${kmh}.`;
+      tip = 'Side-by-side is survivable; lift (◀) to soften a hit from behind a slower car.';
+      break;
+    case 'rear':
+      line = `${cause.driver ? who : 'A faster car'} ran into the back of you at ${kmh}.`;
+      tip = 'A ◀◀ on the left edge is a car coming from behind: get out of its lane.';
+      break;
+    case 'terminal-part':
+      line = `Hit ${cause.driver ? who : 'a car'} with the ${PART_NAME[cause.part] || 'bodywork'} already gone.`;
+      tip = 'At 100 % the damage card reads NEXT HIT = OUT: box for repairs, the crew fixes it with the tyres.';
+      break;
+    case 'debris':
+      line = 'Debris went under the car: the front wing was already gone.';
+      tip = 'Debris only costs bodywork while there is a wing to take it. Box once the card reads NEXT HIT = OUT.';
+      break;
+    case 'stranded':
+      line = `Into ${cause.driver ? `${who}'s` : 'the'} stranded car under the yellow. A stopped car is always fatal.`;
+      tip = 'The flashing yellow chevron on the right edge marks where it sits.';
+      break;
+    default:
+      line = 'Retired.';
+      tip = '';
+  }
+  let extra = null;
+  if (cause.punctured) extra = 'And you were limping on a puncture.';
+  else if (cause.cliffAt !== null && cause.cliffAt !== undefined) {
+    extra = cause.stops ? `Tyres had been over the cliff since ${formatTime(cause.cliffAt)}.` : `You never boxed: tyres hit the cliff at ${formatTime(cause.cliffAt)}.`;
+  }
+  return { line, tip, extra };
+}
 
 // ---------------------------------------------------------------------------
 // Engine model (shared by the synth and the sample player)
