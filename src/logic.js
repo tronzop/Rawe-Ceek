@@ -271,9 +271,18 @@ export const totalDamage = (parts) => Math.max(parts.wing, parts.floor);
 // ---------------------------------------------------------------------------
 // Engine model (shared by the synth and the sample player)
 // ---------------------------------------------------------------------------
-export const ENGINE = { gears: 8, idleRpm: 4000, maxRpm: 12500, cylinders: 12 };
+export const ENGINE = { gears: 8, idleRpm: 4000, maxRpm: 12000, cylinders: 6 };
 /**
- * Gear, normalised rpm (0..1 of the rev range) and the V12 firing frequency for a
+ * Firing frequency of the 1.6 L V6 for a normalised rpm (0 = idle, 1 = the race redline).
+ * A four-stroke fires every cylinder once per two revolutions: rpm/60 × 3, so 200 Hz at
+ * idle and 600 Hz flat out. Above 1 is allowed (downshift blips overshoot the redline).
+ */
+export function firingHzFromNorm(rpmNorm) {
+  const rpm = ENGINE.idleRpm + Math.max(0, rpmNorm) * (ENGINE.maxRpm - ENGINE.idleRpm);
+  return (rpm / 60) * (ENGINE.cylinders / 2);
+}
+/**
+ * Gear, normalised rpm (0..1 of the rev range) and the V6 firing frequency for a
  * speed ratio 0..1. Sequential box: rpm climbs through a gear and drops on the upshift.
  */
 export function engineState(speedRatio) {
@@ -284,7 +293,6 @@ export function engineState(speedRatio) {
   // the lower gears rev out over a smaller speed band, so the redline arrives sooner
   const rpmNorm = clamp(0.3 + 0.7 * inGear, 0, 1);
   const rpm = ENGINE.idleRpm + rpmNorm * (ENGINE.maxRpm - ENGINE.idleRpm);
-  // a four-stroke fires every cylinder once per two revolutions
-  const firingHz = (rpm / 60) * (ENGINE.cylinders / 2);
+  const firingHz = firingHzFromNorm(rpmNorm);
   return { gear, rpmNorm, rpm, firingHz };
 }

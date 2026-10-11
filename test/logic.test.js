@@ -304,7 +304,7 @@ test('meme pack: clip resolution prefers real recordings over the shipped voice 
   }
 });
 
-test('engine model: gears climb with speed, rpm saws through the range, V12 fires 6× per rev', () => {
+test('engine model: gears climb with speed, rpm saws through the range, V6 fires 3× per rev', () => {
   const { engineState, ENGINE } = logic;
   assert.equal(engineState(0).gear, 1);
   assert.equal(engineState(1).gear, ENGINE.gears);
@@ -313,8 +313,8 @@ test('engine model: gears climb with speed, rpm saws through the range, V12 fire
   assert.equal(after.gear, before.gear + 1);
   assert.ok(after.rpmNorm < before.rpmNorm, 'rpm drops on the upshift');
   const s = engineState(0);
-  assert.ok(Math.abs(s.firingHz - (s.rpm / 60) * 6) < 1e-9);
-  assert.ok(engineState(1).firingHz > 1000 && engineState(0).firingHz > 300);
+  assert.ok(Math.abs(s.firingHz - (s.rpm / 60) * 3) < 1e-9);
+  assert.equal(engineState(1).firingHz, 600);
 });
 
 test('mariachi arrangements are well-formed', async () => {
