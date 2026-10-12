@@ -1,6 +1,6 @@
 // Career: persistent stats + trophy cabinet, all in localStorage.
 // Pure evaluation lives in `evaluateTrophies` so it can be unit-tested.
-import { STORAGE_KEYS } from './config.js';
+import { START, STORAGE_KEYS } from './config.js';
 
 export const TROPHIES = [
   { id: 'lightsout', name: 'Lights out', desc: 'Start your first race.', check: (c) => c.races >= 1 },
@@ -67,7 +67,7 @@ export function applyRun(career, run) {
 
 /** The quicker of two reaction times, where 0 / missing means "none". */
 export function bestReaction(a, b) {
-  const ok = (v) => typeof v === 'number' && v > 0;
+  const ok = (v) => typeof v === 'number' && v >= START.reactionFloor; // quicker than that is a guess (or an old save's)
   if (!ok(a)) return ok(b) ? b : 0;
   return ok(b) ? Math.min(a, b) : a;
 }

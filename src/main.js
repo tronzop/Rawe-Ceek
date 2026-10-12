@@ -220,7 +220,10 @@ function gameOver(payload = {}) {
     if (!still()) return;
     show('over');
     requestAnimationFrame(() => screens.over.classList.add('revealed'));
-    ($('#nameInput').value ? $('#submitScore') : $('#nameInput')).focus();
+    // land on the top of the panel (the cause of the crash and the score), not scrolled down to the
+    // name field; on touch no focus at all (it can bring the keyboard up over the panel)
+    if (!touch) ($('#nameInput').value ? $('#submitScore') : $('#nameInput')).focus({ preventScroll: true });
+    screens.over.scrollTop = 0;
     refreshLeaderboard();
   }, 1700);
 }
@@ -324,17 +327,35 @@ function coach(id) {
   if (!COACH_CARDS[id] || coachSeen.has(id) || coachQueue.includes(id) || hud.coach?.id === id) return;
   coachQueue.push(id);
 }
+/** Slicks on a wet track (the 'rain' card's moment). */
+const slicksInWet = () => world.raining && world.rain > 0.35 && COMPOUNDS[world.tyre.compound].wet === undefined;
+/**
+ * Is a card's moment still live? A queued card whose moment has passed (the window shut, the safety
+ * car went in) is dropped unseen rather than shown as stale advice, so it comes back next time.
+ */
+const COACH_LIVE = {
+  pit: () => world.pit.open && !world.pit.inLane && !world.pit.requested,
+  tow: () => world.tow > 0,
+  cliff: () => world.tyre.wear > TYRES.cliffStart,
+  contact: () => true,
+  rain: slicksInWet,
+  sc: () => world.sc.active && !world.sc.neutral,
+};
 /** Per frame: age the card on screen, and bring up the next one once the opening tip is done. */
 function updateCoach(dt) {
   if (hud.coach) {
     hud.coach.age += dt;
-    if (hud.coach.age >= COACH_CARD_DUR) hud.coach = null;
+    // nothing over the pit-stop mini-game
+    if (hud.coach.age >= COACH_CARD_DUR || world.pit.inLane) hud.coach = null;
   }
   if (state !== 'playing' || world.gameOver) return;
   // the moments that are states rather than events
   if (world.tow > 0.5) coach('tow');
-  if (world.raining && world.rain > 0.35 && COMPOUNDS[world.tyre.compound].wet === undefined) coach('rain');
-  if (hud.coach || !coachQueue.length || !world.racing || world.start.sinceGo < COACH.each) return;
+  if (slicksInWet()) coach('rain');
+  for (let i = coachQueue.length - 1; i >= 0; i--) if (!COACH_LIVE[coachQueue[i]]()) coachQueue.splice(i, 1);
+  if (hud.coach || !coachQueue.length || !world.racing || world.start.sinceGo < COACH.each || world.pit.inLane) return;
+  // the safety-car card points at the banner, which only shows once the SAFETY CAR toast has gone
+  if (COACH_CARDS[coachQueue[0]].at === 'banner' && hud.toast && hud.toast.age < hud.toast.dur) return;
   const id = coachQueue.shift();
   coachSeen.add(id); // seen once it is actually on screen, so a crash before it shows does not use it up
   saveCoachSeen();
@@ -569,9 +590,12 @@ function syncBoxButton() {
   const nc = COMPOUNDS[world.nextCompound];
   const label = !racing ? '' : world.pit.requested ? 'BOXING…' : world.pit.open ? 'BOX BOX' : 'BOX';
   const why = world.pit.reason;
+  // on touch the button is narrow (82 px on a short phone): short labels, the countdown first so it never gets cut
   const sub = !racing ? '' : world.pit.open
-    ? (why === 'puncture' ? 'puncture — box now' : why === 'damage' ? 'repairs — box now' : why === 'sc' ? `SC cheap stop${keyHint}` : `fit ${nc.label.toLowerCase()}s · ${Math.ceil(world.pit.left)}s${keyHint}`)
-    : world.pit.cooldown > 0 ? 'fresh tyres — stay out' : `window in ${Math.ceil(world.pitCountdown())}s`;
+    ? (touch
+      ? (why === 'puncture' ? 'puncture' : why === 'damage' ? 'repairs' : why === 'sc' ? 'SC cheap stop' : `${Math.ceil(world.pit.left)}s · ${nc.label.toLowerCase()}s`)
+      : (why === 'puncture' ? 'puncture — box now' : why === 'damage' ? 'repairs — box now' : why === 'sc' ? `SC cheap stop${keyHint}` : `fit ${nc.label.toLowerCase()}s · ${Math.ceil(world.pit.left)}s${keyHint}`))
+    : world.pit.cooldown > 0 ? (touch ? 'stay out' : 'fresh tyres — stay out') : `window in ${Math.ceil(world.pitCountdown())}s`;
   // this runs every frame: only touch the DOM when something actually changed
   const key = `${hidden}|${world.pit.open}|${world.pit.requested}|${label}|${sub}`;
   if (key === boxBtnKey) return;

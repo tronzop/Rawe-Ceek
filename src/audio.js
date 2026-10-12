@@ -32,6 +32,8 @@ export const SFX_OPTIONAL = {
   radio_ping: 'assets/sfx/radio_ping.ogg', // Fenrir21, CC0
 };
 const MAX_ONESHOTS = 6;
+// long crowd / launch beds on ambBus have their own small pool, so short cues never steal them
+const MAX_AMB_ONESHOTS = 3;
 // the pit limiter holds the engine at 6000 rpm
 const LIMITER_NORM = (6000 - ENGINE.idleRpm) / (ENGINE.maxRpm - ENGINE.idleRpm);
 
@@ -347,6 +349,9 @@ export class AudioEngine {
   }
   /** Music level under speech / on a crash: 1 = full band. */
   duckMusic(level, tc = 0.2) {
+    // while the band is fading out (game over) nothing brings it back up: not a voice clip's duck to
+    // 0.4, nor the end of one; startMusic clears it
+    if (this.musicFading && level > 0.001) return;
     if (this.duck) this.duck.gain.setTargetAtTime(level, this.ctx.currentTime, tc);
   }
   /** Engine level under speech: 1 = full. */
@@ -392,21 +397,24 @@ export class AudioEngine {
    * Opens a one-shot voice lasting `len` seconds: a gain node the recipe connects into.
    * At most MAX_ONESHOTS live at once; when full, prio 0 (engine pops, ticks) is dropped
    * and anything else steals the oldest voice of equal or lower priority. prio 2 = crash.
+   * Ambience beds (bus = ambBus) count against their own MAX_AMB_ONESHOTS pool instead.
    */
   voice(len, { prio = 1, bus = null } = {}) {
     if (!this.ctx) return null;
     const t = this.ctx.currentTime;
     this.voices = this.voices.filter((v) => v.end > t);
-    if (this.voices.length >= MAX_ONESHOTS) {
+    const amb = !!bus && bus === this.ambBus;
+    const pool = this.voices.filter((v) => !!v.amb === amb);
+    if (pool.length >= (amb ? MAX_AMB_ONESHOTS : MAX_ONESHOTS)) {
       if (prio === 0) return null;
       let victim = null;
-      for (const v of this.voices) if (v.prio <= prio && (!victim || v.prio < victim.prio || (v.prio === victim.prio && v.start < victim.start))) victim = v;
+      for (const v of pool) if (v.prio <= prio && (!victim || v.prio < victim.prio || (v.prio === victim.prio && v.start < victim.start))) victim = v;
       if (!victim) return null;
       this.killVoice(victim, t);
     }
     const out = this.ctx.createGain();
     out.connect(bus || this.sfxBus);
-    const v = { out, prio, start: t, end: t + len + 0.05 };
+    const v = { out, prio, amb, start: t, end: t + len + 0.05 };
     this.voices.push(v);
     return v;
   }
@@ -551,8 +559,11 @@ export class AudioEngine {
   mirrorBlip() { this.tone({ type: 'sine', f0: 520, f1: 780, dur: 0.12, vol: 0.25, attack: 0.005 }); }
 
   // ---------- start ----------
-  /** One soft low tick per start light. The real gantry is silent; this is game feedback. */
-  lightTick() { this.tone({ type: 'sine', f0: 220, dur: 0.04, vol: 0.13, attack: 0.002 }); }
+  /**
+   * One tick per start light. The real gantry is silent; this is game feedback. A 940 Hz triangle,
+   * above the launch-control revs (≈500 Hz) so it is not masked, and loud enough to sit over them.
+   */
+  lightTick() { this.tone({ type: 'triangle', f0: 940, dur: 0.06, vol: 0.3, attack: 0.002 }); }
   /** Jump start: an FIA-style double tone, 2 × 1 kHz square, 80 ms on, 80 ms gap. */
   jumpStartTone() {
     const v = this.voice(0.26);
@@ -1197,9 +1208,11 @@ export class AudioEngine {
 
   // ---------- soundtrack: lookahead step sequencer ----------
   startMusic() {
-    if (!this.ctx || this.seq.running) return;
+    if (!this.ctx) return;
     if (this.fadeTimer) { clearTimeout(this.fadeTimer); this.fadeTimer = null; }
+    this.musicFading = false;
     this.duckMusic(1, 0.05);
+    if (this.seq.running) return;
     this.seq.running = true;
     this.seq.step = 0;
     this.seq.nextNoteTime = this.ctx.currentTime + 0.05;
@@ -1230,6 +1243,7 @@ export class AudioEngine {
   fadeOutMusic(seconds = 0.6) {
     if (!this.ctx) return;
     this.duckMusic(0.0001, seconds / 3);
+    this.musicFading = true;
     if (this.fadeTimer) clearTimeout(this.fadeTimer);
     this.fadeTimer = setTimeout(() => { this.fadeTimer = null; this.stopMusic(); }, seconds * 1000);
   }

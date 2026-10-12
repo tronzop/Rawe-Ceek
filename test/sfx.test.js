@@ -76,6 +76,19 @@ test('start: a jump start fires its tone once and is never timed into the career
   assert.equal(w.run.reaction, 0, 'not a reaction time');
 });
 
+test('start: a press on the first frame after lights out is a guess, not a 0.017 s reaction', () => {
+  const events = [];
+  const w = runStart(events, { pressAfter: 0 });
+  const r = events.find(([e]) => e === 'reaction')[1];
+  assert.ok(r.reaction < START.reactionFloor);
+  assert.equal(r.jumped, true);
+  assert.equal(r.great, false);
+  assert.equal(count(events, 'greatStart'), 0);
+  assert.equal(w.run.reaction, 0);
+  assert.equal(bestReaction(0.3, 0.017), 0.3, 'never a career best');
+  assert.equal(bestReaction(0.017, 0.3), 0.3, 'an old save\'s impossible best gives way');
+});
+
 test('start: a slow start (never pressed) records no reaction', () => {
   const events = [];
   const w = runStart(events, { pressAfter: 99 });
@@ -109,17 +122,20 @@ test('close calls and scrapes say which side the car went by (up = the car\'s le
   const top = w.playerParts[1].y;
   const t = { id: 1, type: 'tyre', x: p.x - 20, y: top - 10 - 10, r: 10, vx: 0, vy: 0, spin: 0, compound: COMPOUNDS.medium, bounce: false };
   w.collide(t, w.playerRect, w.player);
+  t.y += 7;
+  w.collide(t, w.playerRect, w.player);
+  t.y -= 50; // gone by
+  w.collide(t, w.playerRect, w.player);
   w.collide(t, w.playerRect, w.player); // same tyre again: not a second close call
   assert.equal(count(events, 'closeCall'), 1);
   assert.equal(events.find(([e]) => e === 'closeCall')[1].side, 'up');
-  t.y += 7;
-  w.collide(t, w.playerRect, w.player);
-  w.collide(t, w.playerRect, w.player);
   assert.equal(count(events, 'scrape'), 1);
   assert.equal(events.find(([e]) => e === 'scrape')[1].side, 'up');
   // and one below
   const bottom = Math.max(...w.playerParts.map((r) => r.y + r.h));
   const t2 = { id: 2, type: 'tyre', x: p.x - 20, y: bottom + 10 + 10, r: 10, vx: 0, vy: 0, spin: 0, compound: COMPOUNDS.medium, bounce: false };
+  w.collide(t2, w.playerRect, w.player);
+  t2.y += 50;
   w.collide(t2, w.playerRect, w.player);
   assert.equal(events.filter(([e]) => e === 'closeCall').at(-1)[1].side, 'down');
 });

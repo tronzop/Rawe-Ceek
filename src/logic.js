@@ -369,9 +369,14 @@ export function pointsFor(position) {
 export function pitLossMetres(refSpeed, stopSeconds, laneSeconds = PIT.laneTravel + PIT.mergeTime) {
   return (Math.max(0, refSpeed - SPEED.pitLimit) * laneSeconds + Math.max(0, refSpeed) * stopSeconds) * WORLD.metresPerPx;
 }
-/** Places a loss of `metres` costs (one per GP.placeGapMetres, rounded). */
-export function placesLost(metres) {
-  return Math.max(0, Math.round(metres / GP.placeGapMetres));
+/**
+ * Places a loss of `metres` costs (one per GP.placeGapMetres, rounded). The gap between cars is a
+ * time gap, so in metres it grows with the field's speed: pass `elapsed` and the gap scales with
+ * baseSpeed(elapsed) / SPEED.base, which keeps a typical stop at about three places all race.
+ */
+export function placesLost(metres, elapsed = 0) {
+  const gap = GP.placeGapMetres * (baseSpeed(elapsed) / SPEED.base);
+  return Math.max(0, Math.round(metres / gap));
 }
 
 // ----- flow -----

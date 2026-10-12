@@ -74,6 +74,14 @@ test('B11: the seen list is in localStorage under rc.coachSeen, guarded, with a 
   assert.ok(html.includes('id="resetTutorial"'));
 });
 
+test('B11: every coach card has a live() check, so stale queued cards are dropped unseen', () => {
+  const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+  const live = main.slice(main.indexOf('const COACH_LIVE = {'), main.indexOf('};', main.indexOf('const COACH_LIVE = {')));
+  for (const id of Object.keys(COACH_CARDS)) assert.ok(new RegExp(`\\b${id}: `).test(live), id);
+  const upd = main.slice(main.indexOf('function updateCoach'));
+  assert.ok(upd.indexOf('COACH_LIVE[') < upd.indexOf('coachSeen.add'), 'checked before it is marked seen');
+});
+
 test('A19: the trackside boards carry no real sponsors', () => {
   const src = readFileSync(new URL('../src/render.js', import.meta.url), 'utf8');
   for (const word of ['PIRELLI', 'DHL', 'ROLEX', 'ARAMCO', 'HEINEKEN']) assert.ok(!src.includes(`'${word}'`), word);

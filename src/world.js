@@ -58,6 +58,16 @@ export const CRASH_FREEZE = 0.4;
 /** What each score source is called in World.run.scoreBy. */
 export const SCORE_SOURCES = ['distance', 'passes', 'close', 'pit', 'gp', 'other'];
 
+/**
+ * The box a popup's text covers, about its baseline at (x, y): drawPopups' font size (bigger the more
+ * it pays) times `scale`, centred, with a rough average glyph width for the bold face.
+ */
+export function popupBox(x, y, text, value, scale = 1) {
+  const size = (value ? 16 + Math.min(14, value / 10) : 18) * scale;
+  const w = (value ? `+${value} ${text}` : text).length * size * 0.62 + 6;
+  return { l: x - w / 2, r: x + w / 2, t: y - size * 0.95, b: y + size * 0.25 };
+}
+
 export class World {
   /** `car` is an entry from cars.js (or its id); it decides the livery, the handling and who your team-mate is. */
   constructor(emit, car = DEFAULT_CAR) {
@@ -100,6 +110,7 @@ export class World {
     this.hazards = [];
     this.particles = [];
     this.popups = [];
+    this.popupScale = 1; // the HUD scale popups are drawn at (the renderer keeps it current)
     this.spawnTimer = 1.2;
     this.breather = 0; // seconds of no spawns left (after the chequered flag)
     this.warnings = []; // edge warnings for hazards about to come on screen (see updateWarnings)
@@ -307,8 +318,19 @@ export class World {
    * more it pays. Popups landing on top of a fresh one stack upwards instead of overprinting it.
    */
   addPopup(x, y, text, color = '#ffd400', value = 0) {
+    // stacked by the size it is drawn at (render.js drawPopups, which keeps popupScale current):
+    // a new label that would overlap any live one goes up above it
     let yy = y;
-    for (let i = 0; i < 6 && this.popups.some((pp) => pp.age < 0.5 && Math.abs(pp.x - x) < 90 && Math.abs(pp.y - yy) < 18); i++) yy -= 22;
+    const me = popupBox(x, yy, text, value, this.popupScale);
+    for (let i = 0; i < 8; i++) {
+      const hit = this.popups.find((pp) => {
+        if (pp.age >= pp.life) return false;
+        const o = popupBox(pp.x, pp.y, pp.text, pp.value, this.popupScale);
+        return o.l < me.r && me.l < o.r && o.t < me.b + yy - y && me.t + yy - y < o.b;
+      });
+      if (!hit) break;
+      yy = popupBox(hit.x, hit.y, hit.text, hit.value, this.popupScale).t - (me.b - y) - 2;
+    }
     this.popups.push({ x, y: yy, text, color, value, age: 0, life: 1.1 });
   }
 
@@ -408,6 +430,7 @@ export class World {
       if (s.reaction === null) {
         if (go) {
           s.reaction = s.sinceGo;
+          if (!s.jumped && s.reaction < START.reactionFloor) { s.jumped = true; this.emit('jumpStart'); } // guessed the lights
           if (!s.jumped) this.run.reaction = s.reaction;
           this.emit('reaction', { reaction: s.reaction, jumped: s.jumped, great: !s.jumped && s.reaction <= START.reactionWindow });
           if (!s.jumped && s.reaction <= START.reactionWindow) {
@@ -482,6 +505,8 @@ export class World {
           this.rainTimer = rand(WEATHER.rainDuration.min, WEATHER.rainDuration.max);
           this.rainPeak = fc.peak;
           this.forecast = null;
+          // the wall puts the shower's tyre on the plan as it starts, so the call, the plan and BOX agree
+          if (wrongForWeather(this.nextCompound, fc.peak)) this.setNextCompound(bestCompound(fc.peak));
           this.emit('rainStart', { peak: fc.peak, best: bestCompound(fc.peak) });
         }
       } else {
@@ -497,9 +522,14 @@ export class World {
     }
     // the planned tyre follows the weather: when the track crosses into slick-killing wet (or dries
     // out from under a rain tyre) the wall changes the plan. Only on the crossing, so you can overrule it.
+    // Wet is judged on where the shower is heading (rainPeak), not the 0.35 it just reached: a heavy
+    // one wants wets, and an inter plan moves on to wets once it passes the wet line.
     const crossedWet = wasRain <= 0.35 && this.rain > 0.35;
     const crossedDry = wasRain >= 0.1 && this.rain < 0.1;
-    if ((crossedWet || crossedDry) && wrongForWeather(this.nextCompound, this.rain)) this.setNextCompound(bestCompound(this.rain));
+    const crossedHeavy = wasRain <= 0.7 && this.rain > 0.7 && this.nextCompound === 'inter';
+    const heading = this.raining ? Math.max(this.rain, this.rainPeak) : this.rain;
+    if ((crossedWet || crossedDry) && wrongForWeather(this.nextCompound, this.rain)) this.setNextCompound(bestCompound(heading));
+    else if (crossedHeavy) this.setNextCompound('wet');
   }
 
   // ----- calendar -----
@@ -606,14 +636,21 @@ export class World {
     this.ers.boosting = false;
     // the field bunches up: every rival ahead of you settles to safety-car pace so you can hold station behind it
     for (const hz of this.hazards) if (hz.type === 'rival' && hz.x > this.player.x) { hz.scPace = rand(...SAFETY_CAR.bunchSpread); hz.weave = false; hz.defend = false; hz.fromBehind = false; }
+    // and a car attacking from behind stands down: it stays behind you (no place lost under the yellow)
+    for (const hz of this.hazards) {
+      if (hz.type === 'rival' && hz.fromBehind && hz.x <= this.player.x) { hz.scPace = rand(...SAFETY_CAR.bunchSpread); hz.fromBehind = false; hz.weave = false; hz.passed = true; }
+    }
     this.run.scPeriods += 1;
     // the reason for the yellow: a stranded car on the far side of the track
     const w = PLAYER.width * 0.92;
     const h = PLAYER.height * 0.92;
     const y = Math.random() < 0.5 ? this.trackTop + h : this.trackBottom - h;
     const driver = pickDriver(false, this.car.team);
+    // far enough out that it does not arrive before the safety car takes over (fast late in a race; the
+    // field is slowing meanwhile), but inside the cull distance for hazards on their way in
+    const strandedX = this.width + clamp(this.speed * (SC_GAME.takeoverAfter + 0.5), 700, 3000);
     this.hazards.push({
-      id: nextId++, type: 'stranded', x: this.width + 700, y, w, h, rel: 0, vy: 0, team: teamOf(driver), driver, angle: rand(-0.5, 0.5),
+      id: nextId++, type: 'stranded', x: strandedX, y, w, h, rel: 0, vy: 0, team: teamOf(driver), driver, angle: rand(-0.5, 0.5),
       frame: 0, smoke: 0,
     });
     this.emit('scDeployed');
@@ -771,8 +808,10 @@ export class World {
             // what it cost: the lane so far plus the roll down to the blend line, in places
             const rest = Math.max(0, this.pitRef - SPEED.pitLimit) * (pit.timer + PIT.mergeTime);
             pit.lossMetres = (pit.lossPx + rest) * WORLD.metresPerPx;
-            pit.placesLost = placesLost(pit.lossMetres);
-            this.position = clampPosition(this.position + pit.placesLost);
+            // report what the HUD actually applies (the back of the field caps it)
+            const was = this.position;
+            this.position = clampPosition(this.position + placesLost(pit.lossMetres, this.elapsed));
+            pit.placesLost = this.position - was;
             this.emit('pitOut', { compound: this.nextCompound, ...s, lossMetres: pit.lossMetres, places: pit.placesLost, position: this.position });
           }
         }
@@ -1340,6 +1379,35 @@ export class World {
     else this.emit('overtake', { count: this.overtakes, team: hz.team.name, driver: hz.driver, closing, grid: !!hz.grid });
   }
 
+  /**
+   * Pays the close call on a hazard that went by within SCORING.closeCallDistance without touching,
+   * and the scrape on top when it came nearer than FLOW.scrapeGap. Grid cars and the launch build no
+   * flow and give no slow motion (that is just the start, as in onOvertake).
+   */
+  closeCall(hz, p) {
+    hz.nearMiss = true;
+    this.closeCalls += 1;
+    const start = !!hz.grid || this.start.launch > 0;
+    const teammate = hz.type === 'rival' && hz.teammate;
+    const base = teammate ? SCORING_EXTRA.closeCallTeammate : SCORING.closeCall;
+    const pts = start ? base : flowPay(base, this.bumpFlow());
+    this.addScore(pts, 'close');
+    this.addPopup(hz.x, hz.y - 30, 'CLOSE', teammate ? '#e10600' : '#7df9ff', pts);
+    const side = hz.y < p.y ? 'up' : 'down';
+    this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver, flow: this.flow.mult, side });
+    // a scrape: the same close call, but nearer than paint. It pays again (double in all), with a flash and a beat of slow motion
+    if (hz.minGap < FLOW.scrapeGap) {
+      hz.scraped = true;
+      const spts = start ? base : flowPay(base, this.flow.mult);
+      this.addScore(spts, 'close');
+      this.addPopup(hz.x, hz.y - 30, 'SCRAPE', '#ffffff', spts);
+      if (!start) this.slowmo = FLOW.scrapeSlowmo;
+      this.scrapeFlash = 1;
+      this.run.scrapes = (this.run.scrapes || 0) + 1;
+      this.emit('scrape', { driver: hz.driver || null, type: hz.type, side });
+    }
+  }
+
   collide(hz, prect, p, dt = 1 / 60) {
     // everything is measured against the car's hit parts (body + cockpit), close calls included:
     // a tyre bouncing through the air above your nose is a miss, and a close one
@@ -1361,32 +1429,16 @@ export class World {
       for (const q of other) gap = Math.min(gap, partsGap(parts, (r) => rectGap(r, q)));
     }
 
+    const near = hz.type === 'tyre' || hz.type === 'rival' || hz.type === 'stranded';
     if (gap > 0) {
-      const near = hz.type === 'tyre' || hz.type === 'rival' || hz.type === 'stranded';
-      if (near && gap < SCORING.closeCallDistance && !hz.nearMiss) {
-        hz.nearMiss = true;
-        this.closeCalls += 1;
-        const teammate = hz.type === 'rival' && hz.teammate;
-        const base = teammate ? SCORING_EXTRA.closeCallTeammate : SCORING.closeCall;
-        hz.closeBase = base;
-        const pts = flowPay(base, this.bumpFlow());
-        this.addScore(pts, 'close');
-        this.addPopup(hz.x, hz.y - 30, 'CLOSE', teammate ? '#e10600' : '#7df9ff', pts);
-        this.emit(teammate ? 'teammateClose' : 'closeCall', { count: this.closeCalls, driver: hz.driver, flow: this.flow.mult, side: hz.y < p.y ? 'up' : 'down' });
-      }
-      // a scrape: the same close call, but nearer than paint. It pays again (double in all), with a flash and a beat of slow motion
-      if (near && hz.nearMiss && !hz.scraped && gap < FLOW.scrapeGap) {
-        hz.scraped = true;
-        const pts = flowPay(hz.closeBase || SCORING.closeCall, this.flow.mult);
-        this.addScore(pts, 'close');
-        this.addPopup(hz.x, hz.y - 30, 'SCRAPE', '#ffffff', pts);
-        this.slowmo = FLOW.scrapeSlowmo;
-        this.scrapeFlash = 1;
-        this.run.scrapes = (this.run.scrapes || 0) + 1;
-        this.emit('scrape', { driver: hz.driver || null, type: hz.type, side: hz.y < p.y ? 'up' : 'down' });
-      }
+      // close calls are judged once the hazard has gone by: while it is still in the band it might yet
+      // hit you, and a hit is not a near miss. Track the nearest it came, and pay when it leaves the band.
+      if (!near || hz.nearMiss || hz.touched) return;
+      if (gap < SCORING.closeCallDistance) hz.minGap = Math.min(hz.minGap ?? Infinity, gap);
+      else if (hz.minGap != null) this.closeCall(hz, p);
       return;
     }
+    if (near) hz.touched = true; // a touch voids any close call pending on this hazard
 
     switch (hz.type) {
       case 'tyre':

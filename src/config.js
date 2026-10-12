@@ -130,11 +130,13 @@ export const WEATHER = {
 
 export const SPAWN = {
   // Seconds between hazards (the timer runs on track covered, see World.updateSpawns). Traffic now
-  // stays on screen for a while as you reel it in, so this is sparser than it looks; the floor
-  // arrives at about three minutes.
-  baseInterval: 1.3, // at t=0
-  minInterval: 0.45,
-  intervalDecayPerSecond: 0.0048,
+  // stays on screen for a while as you reel it in, and fair spawns, the breather and the pit/grace
+  // pauses skip a good share, so this is sparser than it looks. Re-tuned after those landed (seeded
+  // bot sim, 200 seeds): ~0.8-1.1 hazards/s over 30-120 s, still climbing after 3 min (the floor is
+  // at ~225 s), median survival ~175 s, with no step in the death rate.
+  baseInterval: 0.8, // at t=0
+  minInterval: 0.26,
+  intervalDecayPerSecond: 0.0024,
   drsEvery: { min: 9, max: 16 },
   // Relative weights of hazard types; shifted over time in logic.pickHazard.
   weights: { tyre: 5, rival: 2.2, oil: 1.6, debris: 1.4 },
@@ -142,7 +144,7 @@ export const SPAWN = {
   minGap: 2.2 * (PLAYER.height - PLAYER.hitboxInset.y * 2), // px of clear track the car needs (2.2 × its hitbox height)
   wallSlack: 0.35, // s: hazards crossing your line this close together in time count as one wall
   retry: 0.2, // s to wait before trying again when there is no fair lane
-  onRamp: { seconds: 15, mult: 1.6 }, // after the launch the interval starts this much longer and eases to normal
+  onRamp: { seconds: 10, mult: 1.25 }, // after the launch the interval starts this much longer and eases to normal
   breather: 3, // s of no spawns after the chequered flag
   bigTyreChance: 0.08, // share of loose tyres that are a big one (r × 1.5)
 };
@@ -208,7 +210,7 @@ export const GP = {
   finishBonus: 150,
   points: [25, 18, 15, 12, 10, 8, 6, 4, 2, 1], // championship points by finishing position at each chequered flag
   transition: 3, // seconds to morph the scenery between venues
-  placeGapMetres: 60, // track between two places: a pit stop that costs 180 m costs three places
+  placeGapMetres: 60, // track between two places at SPEED.base (scaled with the field's speed): a stop costs about three places all race
   fieldSize: 20, // you can drop no further than this
 };
 
@@ -314,6 +316,9 @@ export const START = {
   spreadOver: 0.7, // fraction of launchSeconds over which the pack spreads from a unit to its settled speeds
   reactionWindow: 0.35, // push / boost within this of lights out = great start
   reactionBonus: 50,
+  // quicker than a human can react to the lights is anticipating them (F1's start sensor flags under
+  // 0.2 s): no bonus, and never a career-best reaction
+  reactionFloor: 0.1,
   overtakeBonus: 30, // grid cars are slow traffic off the line: worth less than a real overtake
 };
 

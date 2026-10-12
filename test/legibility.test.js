@@ -88,9 +88,12 @@ test('close calls are measured against the same parts', () => {
   w.speed = 0;
   const p = w.player;
   // 10 px clear of the nose-top air would have been a hit before; now it is just close to the body
-  w.hazards.push(tyre(p.x + PLAYER.width * 0.35, p.y - PLAYER.height * 0.08 - 6 - 10, 6));
+  const t = tyre(p.x + PLAYER.width * 0.35, p.y - PLAYER.height * 0.08 - 6 - 10, 6);
+  w.hazards.push(t);
   w.update(DT, idle());
   assert.equal(w.gameOver, false);
+  t.y -= 40; // and gone by: the close call is paid once it is clear
+  w.update(DT, idle());
   assert.ok(events.some(([e]) => e === 'closeCall'));
 });
 

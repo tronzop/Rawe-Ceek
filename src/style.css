@@ -17,7 +17,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
   display: flex; align-items: center; justify-content: center; gap: 24px; padding: 24px;
   background: radial-gradient(ellipse at center, rgba(0,0,0,0.35), rgba(0,0,0,0.7));
   backdrop-filter: blur(2px);
+  overflow: auto;
 }
+/* centred while it fits, scrollable from the top when a panel is taller than the window */
+.screen > * { margin-block: auto; }
 .screen[hidden] { display: none; }
 .panel {
   background: var(--panel); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px;
@@ -109,6 +112,7 @@ input:focus { outline: 2px solid var(--red); outline-offset: 1px; }
 
 @media (max-width: 900px) {
   .screen { flex-direction: column; overflow: auto; align-items: stretch; justify-content: flex-start; }
+  .screen > * { margin-block: 0; }
   .board { max-width: none; }
   .over { flex-direction: column; }
   #sadGreg { max-width: 100%; max-height: 32vh; align-self: center; }

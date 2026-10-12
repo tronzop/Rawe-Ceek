@@ -190,6 +190,7 @@ test('the planned tyre follows the weather, on the crossing only', () => {
   const w = racingWorld(events);
   assert.equal(w.nextCompound, 'medium');
   w.raining = true;
+  w.rainPeak = WEATHER.damp; // a light shower: inters (a heavy one goes to wets, see gameplay.test.js)
   w.rainTimer = 60;
   step(w, idle(), WEATHER.transition * 0.35 + 0.5);
   assert.notEqual(w.nextCompound, 'medium');

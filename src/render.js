@@ -34,7 +34,7 @@ export const COACH_CARDS = {
   tow: { at: 'ers', accent: '#7df9ff', keys: 'In the tow: free speed and the battery charges · [SPACE] spends it', touch: 'In the tow: free speed and the battery charges · hold [ERS] to spend it' },
   cliff: { at: 'tyre', accent: '#ffd400', keys: 'Tyres over the cliff: grip is going · box at the next window', touch: 'Tyres over the cliff: grip is going · box at the next window' },
   contact: { at: 'damage', accent: '#ff3b3b', keys: 'A part at 100% means the next hit retires you · the pit crew fixes it', touch: 'A part at 100% means the next hit retires you · the pit crew fixes it' },
-  rain: { at: 'nextTyre', accent: '#7fb2ff', keys: 'Slicks in the wet: no grip · [1]–[5] pick inters or wets, then box', touch: 'Slicks in the wet: no grip · [TYRE] picks inters or wets, then box' },
+  rain: { at: 'tyre', accent: '#7fb2ff', keys: 'Slicks in the wet: no grip · [1]–[5] pick inters or wets, then box', touch: 'Slicks in the wet: no grip · [TYRE] picks inters or wets, then box' },
   sc: { at: 'banner', accent: '#ffd400', keys: 'Safety car: no overtaking · [◀] lift and drop back behind the pack', touch: 'Safety car: no overtaking · hold [LIFT] and drop back behind the pack' },
 };
 /** Seconds a coach card stays up. */
@@ -123,6 +123,25 @@ export class Renderer {
     this.ctx.scale(k, k);
     this.ctx.translate(-ax, -ay);
   }
+  /**
+   * Opacity for a bottom-corner card (local rect x, y, w, h under scale k about ax, ay): it grows over
+   * the bottom lane on a phone, so it fades back whenever your car or a hazard is under it.
+   */
+  cardFade(world, name, x, y, w, h, ax, ay, k) {
+    const l = ax + (x - ax) * k, t = ay + (y - ay) * k, r = l + w * k, b = t + h * k;
+    const under = (cx, cy, hw, hh) => cx + hw > l && cx - hw < r && cy + hh > t && cy - hh < b;
+    const p = world.player;
+    let hidden = !world.gameOver && under(p.x, p.y, PLAYER.width * 0.45, PLAYER.height * 0.45);
+    for (const hz of world.hazards) {
+      if (hidden) break;
+      if (hz.type === 'drs' || hz.dead) continue;
+      hidden = under(hz.x, hz.y, hz.r ?? hz.w / 2, hz.r ?? hz.h / 2);
+    }
+    this.fades ||= {};
+    const f = this.fades[name] ?? 1;
+    this.fades[name] = f + ((hidden ? 0.3 : 1) - f) * Math.min(1, (this.dt || 0) * 10);
+    return this.fades[name];
+  }
   /** Records a HUD widget's on-screen rect for the coach cards: local rect (x, y, w, h) under scale k about (ax, ay). */
   anchor(name, x, y, w, h, ax, ay, k) {
     this.anchors[name] = { x: ax + (x - ax) * k, y: ay + (y - ay) * k, w: w * k, h: h * k };
@@ -195,6 +214,7 @@ export class Renderer {
     this.drawBackdrop(world, VW, H);
     this.drawPitLane(world, VW);
     this.drawTrack(world, VW);
+    this.drawPitEntryLabel(world);
     ctx.restore();
     this.drawGrid(world, W);
     ctx.save();
@@ -256,7 +276,7 @@ export class Renderer {
       ctx.fillStyle = 'rgba(255,255,255,0.35)';
       ctx.font = `bold 11px ${FONT}`;
       ctx.textAlign = 'center';
-      ctx.fillText(`P${20 - i}`, x, y - h * 0.5 - 10); // you are P20 at the back; the field counts down ahead of you
+      ctx.fillText(`P${slots.length - i}`, x, y - h * 0.5 - 10); // you start at the back (world.position, P13); the field counts down ahead of you
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
     }
     // start / finish line: chequers across the track just ahead of pole
@@ -823,17 +843,36 @@ export class Renderer {
       const glow = 0.5 + 0.5 * Math.sin(this.time * 6);
       ctx.fillStyle = `rgba(46,204,113,${0.35 + glow * 0.45})`;
       ctx.fillRect(px - 140, wallTop, 280, wallH);
-      ctx.fillStyle = '#fff';
-      const fs = Math.min(wallH - 2, Math.max(13, Math.ceil(10 / this.cssPerUnit))); // readable on a phone, inside the wall
-      ctx.font = `bold ${fs}px ${FONT}`;
-      ctx.textAlign = 'center';
-      ctx.fillText('▲ PIT ENTRY ▲', px, wallTop + wallH / 2 + fs * 0.38);
-      // the window draining away, along the bottom of the glow
-      if (world.pit.reason === 'window') {
-        const f = clamp(world.pit.left / PIT.openFor, 0, 1);
-        ctx.fillStyle = world.pit.left <= 2 && Math.sin(this.time * 16) > 0 ? '#ffffff' : '#7ff0b0';
-        ctx.fillRect(px - 140, wallTop + wallH - 3, 280 * f, 3);
-      }
+    }
+  }
+  /**
+   * The PIT ENTRY label and the window draining away. Drawn after the track, because the top kerb
+   * covers the lower half of the pit wall: the label sits centred on the wall, outlined so it reads
+   * over the kerb too.
+   */
+  drawPitEntryLabel(world) {
+    if (!world.pit.open || world.pit.inLane) return;
+    const { ctx } = this;
+    const wallTop = world.pitBottom;
+    const wallH = world.trackTop - wallTop;
+    const px = world.player.x;
+    const fs = Math.max(13, Math.ceil(10 / this.cssPerUnit)); // readable on a phone
+    const cy = wallTop + wallH / 2;
+    ctx.font = `bold ${fs}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(3, fs * 0.22);
+    ctx.strokeStyle = 'rgba(10,60,30,0.95)';
+    ctx.strokeText('▲ PIT ENTRY ▲', px, cy);
+    ctx.fillStyle = '#fff';
+    ctx.fillText('▲ PIT ENTRY ▲', px, cy);
+    ctx.textBaseline = 'alphabetic';
+    // the window draining away, along the top of the glow (the kerb covers its bottom)
+    if (world.pit.reason === 'window') {
+      const f = clamp(world.pit.left / PIT.openFor, 0, 1);
+      ctx.fillStyle = world.pit.left <= 2 && Math.sin(this.time * 16) > 0 ? '#ffffff' : '#7ff0b0';
+      ctx.fillRect(px - 140, wallTop, 280 * f, 3);
     }
   }
 
@@ -1155,6 +1194,7 @@ export class Renderer {
         case 'stranded': color = Math.sin(this.time * 10) > 0 ? '#ffd400' : '#6b5a00'; break;
         default: color = '#fff';
       }
+      color = warnColor(color);
       // (kept clear of the tyre card that overlaps the bottom of the track in the right corner)
       const y = clamp(mapY(wn.y), world.trackTop + 10, wn.side === 'right' ? Math.min(world.trackBottom - 10, world.height - 136) : world.trackBottom - 10);
       if (wn.side === 'right') {
@@ -1163,14 +1203,9 @@ export class Renderer {
         const s = (hz.big ? 18 : 14) + 8 * k;
         const pulse = 0.65 + 0.35 * Math.sin(this.time * (8 + 10 * k));
         const x = W - 6 - s; // the tip, pointing in at the track
-        ctx.globalAlpha = clamp(0.35 + 0.65 * k, 0, 1) * pulse + 0.15;
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        this.chevron(x + 2, y + 2, s, -1);
-        ctx.fillStyle = color;
-        this.chevron(x, y, s, -1);
-        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
+        // never faint: even a far-off warning is clearly there; it pulses harder as it arrives
+        ctx.globalAlpha = clamp(0.7 + 0.3 * k * pulse, 0, 1);
+        this.warnChevron(x, y, s, color);
         if (hz.big || hz.type === 'stranded') {
           ctx.font = `900 ${Math.max(10 * this.ui, Math.ceil(10 / this.cssPerUnit))}px ${FONT}`;
           ctx.textAlign = 'right';
@@ -1181,17 +1216,9 @@ export class Renderer {
         // mirrors: ◀◀ on the left edge while it is still off screen, then a pip on your tail as it comes up
         const k = 1 - clamp(wn.eta / WARN.mirrorLead, 0, 1);
         const pulse = 0.65 + 0.35 * Math.sin(this.time * 12);
-        ctx.globalAlpha = (0.5 + 0.5 * k) * pulse;
+        ctx.globalAlpha = clamp(0.7 + 0.3 * k * pulse, 0, 1);
         if (hz.x + hz.w / 2 < 0) {
-          for (const dx of [6, 21]) {
-            ctx.fillStyle = 'rgba(0,0,0,0.6)';
-            this.chevron(dx + 1.5, y + 1.5, 13, -1);
-            ctx.fillStyle = color;
-            this.chevron(dx, y, 13, -1);
-            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-            ctx.lineWidth = 1.2;
-            ctx.stroke();
-          }
+          for (const dx of [6, 21]) this.warnChevron(dx, y, 13, color);
         }
         const p = world.player;
         const tailX = p.x - (PLAYER.width / 2) * this.zoom - 8;
@@ -1204,6 +1231,20 @@ export class Renderer {
       }
     }
     ctx.restore();
+  }
+  /** An edge-warning chevron pointing left: a dark halo, a white rim, then the hazard colour inside. */
+  warnChevron(x, y, s, color) {
+    const { ctx } = this;
+    ctx.lineJoin = 'round';
+    this.chevron(x, y, s, -1);
+    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.lineWidth = 6;
+    ctx.stroke();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.fill();
   }
   /** A filled chevron with its tip at (x, y) pointing `dir` (-1 left, 1 right); leaves the path for a stroke. */
   chevron(x, y, s, dir) {
@@ -1227,10 +1268,21 @@ export class Renderer {
     ctx.fillRect(0, 0, W, bar);
     ctx.fillRect(0, H - bar, W, bar);
     ctx.globalAlpha = a;
-    ctx.fillStyle = '#ffd400';
+    // Captions stack at the bottom: the call in the bottom bar, the detail line just above it. The top
+    // bar is under the radio strip and the cards, so nothing goes there. On touch the pad covers the
+    // bottom bar, so the stack moves up above the pad (on a dark pill, over the lane).
+    const padTop = this.padReserve > 0 ? H - 62 / this.cssPerUnit : H;
+    const capY = Math.min(H - bar / 2, padTop - 16 * k);
+    const pill = (w, y, h) => {
+      if (capY === H - bar / 2 && y === capY) return; // already on the black bar
+      ctx.fillStyle = 'rgba(4,6,14,0.78)';
+      roundRect(ctx, W / 2 - w / 2 - 12 * k, y - h / 2, w + 24 * k, h, 8 * k);
+      ctx.fill();
+    };
     ctx.font = `900 ${(18 + 6 * a) * k}px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    const capH = (28 + 6 * a) * k;
     const exiting = world.pit.phase === 'merge';
     if (exiting) {
       // where the stop put you, next to the GO: "GO GO GO  REJOINED P14 (−4)"
@@ -1241,17 +1293,27 @@ export class Renderer {
       const gw = ctx.measureText(go).width;
       ctx.font = `900 ${(12 + 4 * a) * k}px ${FONT}`;
       const pw = ctx.measureText(pos).width;
+      pill(gw + pw, capY, capH);
       ctx.textAlign = 'left';
       ctx.fillStyle = lost ? '#ff8a00' : '#2ecc71';
-      ctx.fillText(pos, W / 2 - (gw + pw) / 2 + gw, H - bar / 2);
+      ctx.fillText(pos, W / 2 - (gw + pw) / 2 + gw, capY);
       ctx.font = big;
       ctx.fillStyle = '#ffd400';
-      ctx.fillText(go, W / 2 - (gw + pw) / 2, H - bar / 2);
+      ctx.fillText(go, W / 2 - (gw + pw) / 2, capY);
       ctx.textAlign = 'center';
-    } else ctx.fillText('BOX BOX', W / 2, H - bar / 2);
-    ctx.fillStyle = '#c9ced9';
+    } else {
+      pill(ctx.measureText('BOX BOX').width, capY, capH);
+      ctx.fillStyle = '#ffd400';
+      ctx.fillText('BOX BOX', W / 2, capY);
+    }
     ctx.font = `bold ${12 * k}px ${FONT}`;
-    ctx.fillText(exiting ? `${COMPOUNDS[world.tyre.compound].label} fitted · rejoining, tyres cold` : `${COMPOUNDS[world.nextCompound].label} · get ready on the wheel gun`, W / 2, bar / 2);
+    const sub = exiting ? `${COMPOUNDS[world.tyre.compound].label} fitted · rejoining, tyres cold` : `${COMPOUNDS[world.nextCompound].label} · get ready on the wheel gun`;
+    const subH = 22 * k;
+    const capTop = capY === H - bar / 2 ? H - bar : capY - capH / 2;
+    const subY = capTop - subH / 2 - 4 * k;
+    pill(ctx.measureText(sub).width, subY, subH);
+    ctx.fillStyle = '#c9ced9';
+    ctx.fillText(sub, W / 2, subY);
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
   }
@@ -1490,6 +1552,7 @@ export class Renderer {
   drawPopups(world) {
     const { ctx } = this;
     ctx.textAlign = 'center';
+    world.popupScale = this.uiFor(16); // so addPopup stacks them by the size they are drawn at
     for (const pp of world.popups) {
       const a = clamp(1 - pp.age / pp.life, 0, 1);
       const size = (pp.value ? 16 + Math.min(14, pp.value / 10) : 18) * this.uiFor(16);
@@ -1854,6 +1917,8 @@ export class Renderer {
     // speedo (bottom-left): km/h, the gear you can hear, rev bars that saw with the engine, ERS
     ctx.save();
     this.scaleAbout(pad, H - pad, kBot);
+    const ersFade = this.cardFade(world, 'ers', pad, H - 118, 250, 100, pad, H - pad, kBot);
+    ctx.globalAlpha = ersFade;
     const kmh = world.kmh;
     const ratio = clamp(world.speed / SPEED.max, 0, 1);
     const eng = engineState(ratio);
@@ -1917,13 +1982,13 @@ export class Renderer {
       ctx.strokeRect(ex - 1, H - 38, ew + 2, 12);
       ctx.fillStyle = `rgba(125,249,255,${0.35 * f * (Math.sin(this.time * 30) > 0 ? 1 : 0.4)})`;
       ctx.fillRect(ex, H - 37, ew, 10);
-      ctx.globalAlpha = Math.min(1, f * 1.5);
+      ctx.globalAlpha = Math.min(1, f * 1.5) * ersFade;
       ctx.font = `900 ${this.px(12)}px ${FONT}`;
       ctx.fillStyle = '#7df9ff';
       ctx.textAlign = 'right';
       ctx.fillText(`DRS +${hud.drs.gain}`, pad + 234, H - 42);
       ctx.textAlign = 'left';
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = ersFade;
     }
     ctx.restore();
 
@@ -1932,6 +1997,7 @@ export class Renderer {
     this.scaleAbout(W - pad, H - pad, kBot);
     const tw = 250;
     const tx = W - pad - tw;
+    ctx.globalAlpha = this.cardFade(world, 'tyre', tx, H - 129, tw, 111, W - pad, H - pad, kBot);
     ctx.fillStyle = 'rgba(8,10,16,0.82)';
     roundRect(ctx, tx, H - 118, tw, 100, 10);
     ctx.fill();
@@ -2079,10 +2145,34 @@ export class Renderer {
     ctx.fillStyle = 'rgba(8,10,16,0.82)';
     roundRect(ctx, vx, pad, vw, 64, 10);
     ctx.fill();
+    // the radar: rain (or the end of it) counted down before it arrives (drawn right-aligned on the
+    // venue name's line, so the name gives way to it)
+    const wf = world.forecast;
+    const fcBlink = Math.sin(this.time * 7) > -0.2;
+    let wxText, wxColor;
+    if (wf && wf.kind === 'rain') {
+      wxColor = fcBlink ? '#7fb2ff' : '#c9d9ff';
+      wxText = `🌧 RAIN IN ${Math.ceil(wf.in)}s`;
+    } else if (wf && wf.kind === 'dry') {
+      wxColor = fcBlink ? '#ffd400' : '#fff0a0';
+      wxText = `☀ DRYING IN ${Math.ceil(wf.in)}s`;
+    } else {
+      wxColor = world.raining ? '#7fb2ff' : '#ffd400';
+      wxText = world.raining ? (world.rainPeak < 1 ? '🌦 DAMP' : '🌧 RAIN') : world.rain > 0.1 ? '☁ DRYING' : world.night > 0.5 ? '🌙 NIGHT' : '☀ DRY';
+    }
+    ctx.font = `bold 13px ${FONT}`;
+    const nameMax = vw - 24 - ctx.measureText(wxText).width - 10;
     ctx.textAlign = 'left';
     ctx.fillStyle = '#fff';
+    let name = `${world.venue.flag} ${world.venue.name}`;
     ctx.font = `bold 15px ${FONT}`;
-    ctx.fillText(`${world.venue.flag} ${world.venue.name}`, vx + 12, pad + 24);
+    const nw = ctx.measureText(name).width;
+    if (nw > nameMax) {
+      // shrink a long name (Spa-Francorchamps) to fit beside the forecast, then cut it if it still will not
+      ctx.font = `bold ${Math.max(11, Math.floor(15 * nameMax / nw))}px ${FONT}`;
+      while (name.length > 4 && ctx.measureText(name).width > nameMax) name = `${name.slice(0, -2)}…`;
+    }
+    ctx.fillText(name, vx + 12, pad + 24);
     ctx.font = `${this.px(11)}px ${FONT}`;
     ctx.fillStyle = '#c9ced9';
     // live: what the current position would pay at the flag
@@ -2091,26 +2181,15 @@ export class Renderer {
     const pts = pointsFor(world.position);
     ctx.font = `bold ${this.px(11)}px ${FONT}`;
     ctx.fillStyle = pts > 0 ? '#ffd400' : '#8a91a0';
-    ctx.fillText(`${positionLabel(world.position)} → ${pts} pts`, vx + 12 + ctx.measureText(roundTxt).width, pad + 40);
+    ctx.fillText(`${positionLabel(world.position)} → ${pts} pt${pts === 1 ? '' : 's'}`, vx + 12 + ctx.measureText(roundTxt).width, pad + 40);
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(vx + 12, pad + 48, vw - 24, 6);
     ctx.fillStyle = '#ffd400';
     ctx.fillRect(vx + 12, pad + 48, (vw - 24) * gpProgress(world.distance), 6);
     ctx.textAlign = 'right';
     ctx.font = `bold 13px ${FONT}`;
-    // the radar: rain (or the end of it) counted down before it arrives
-    const wf = world.forecast;
-    const fcBlink = Math.sin(this.time * 7) > -0.2;
-    if (wf && wf.kind === 'rain') {
-      ctx.fillStyle = fcBlink ? '#7fb2ff' : '#c9d9ff';
-      ctx.fillText(`🌧 RAIN IN ${Math.ceil(wf.in)}s`, vx + vw - 12, pad + 24);
-    } else if (wf && wf.kind === 'dry') {
-      ctx.fillStyle = fcBlink ? '#ffd400' : '#fff0a0';
-      ctx.fillText(`☀ DRYING IN ${Math.ceil(wf.in)}s`, vx + vw - 12, pad + 24);
-    } else {
-      ctx.fillStyle = world.raining ? '#7fb2ff' : '#ffd400';
-      ctx.fillText(world.raining ? (world.rainPeak < 1 ? '🌦 DAMP' : '🌧 RAIN') : world.rain > 0.1 ? '☁ DRYING' : world.night > 0.5 ? '🌙 NIGHT' : '☀ DRY', vx + vw - 12, pad + 24);
-    }
+    ctx.fillStyle = wxColor;
+    ctx.fillText(wxText, vx + vw - 12, pad + 24);
     // the music key is a keyboard thing
     if (!touch) {
       ctx.fillStyle = hud.musicOn ? '#c9ced9' : '#666';
@@ -2308,7 +2387,7 @@ export class Renderer {
     ctx.textAlign = 'right';
     ctx.fillStyle = '#ffd400';
     ctx.font = `bold 12px ${MONO}`;
-    ctx.fillText(`${w.weaves} weaves`, x0 + cardW - 16, ty);
+    ctx.fillText(`${w.weaves} weave${w.weaves === 1 ? '' : 's'}`, x0 + cardW - 16, ty);
     ctx.restore();
     this.k = 1;
   }
@@ -2381,24 +2460,39 @@ export class Renderer {
     const a = card && this.anchors[card.at];
     if (!a || c.age >= COACH_CARD_DUR) return;
     const alpha = clamp(Math.min(c.age / 0.25, (COACH_CARD_DUR - c.age) / 0.4), 0, 1) * 0.97;
-    const below = a.y + a.h / 2 < H / 2; // top widgets get the card under them, bottom ones above
-    const tx = clamp(a.x + a.w / 2, 30, W - 30), ty = below ? a.y + a.h : a.y;
+    const below = a.y + a.h / 2 < H / 2; // top widgets get the card under them
+    const wx = clamp(a.x + a.w / 2, 30, W - 30);
+    // Bottom widgets sit just under the track, so their card goes above the track (over the pit wall),
+    // never on the racing lanes; a pointer on its lower edge leans towards the widget.
+    const tx = wx, ty = below ? a.y + a.h : world.trackTop - 14;
     const lines = [this.touch ? card.touch : card.keys];
     ctx.save();
     this.scaleAbout(tx, ty, k);
-    const { width } = this.measureCoachCard(lines);
+    const { width, height } = this.measureCoachCard(lines);
     // keep the whole card on screen: in local units the screen spans tx - (tx - pad) / k .. tx + (W - pad - tx) / k
-    const lo = tx - (tx - 12) / k + width / 2, hi = tx + (W - 12 - tx) / k - width / 2;
+    let lo = tx - (tx - 12) / k + width / 2;
+    const hi = tx + (W - 12 - tx) / k - width / 2;
+    // and clear of the damage card in the top-left when the two would share the band
+    const d = this.anchors.damage;
+    if (!below && d && d.y + d.h > ty - (height + 6) * k) lo = Math.max(lo, tx + (d.x + d.w + 10 - tx) / k + width / 2);
     const cx = lo > hi ? tx : clamp(tx, lo, hi);
     const gapY = 6;
-    this.drawCoachCard(lines, cx, below ? ty + gapY : ty - gapY, { accent: card.accent, alpha, anchor: below ? 'top' : 'bottom' });
-    // the 6 px pointer from the card to the widget
+    this.drawCoachCard(lines, cx, below ? ty + gapY : ty, { accent: card.accent, alpha, anchor: below ? 'top' : 'bottom' });
     ctx.globalAlpha = alpha;
     ctx.fillStyle = card.accent;
     ctx.beginPath();
-    ctx.moveTo(tx - 6, below ? ty + gapY : ty - gapY);
-    ctx.lineTo(tx + 6, below ? ty + gapY : ty - gapY);
-    ctx.lineTo(tx, ty);
+    if (below) {
+      // the 6 px pointer from the card up to the widget
+      ctx.moveTo(tx - 6, ty + gapY);
+      ctx.lineTo(tx + 6, ty + gapY);
+      ctx.lineTo(tx, ty);
+    } else {
+      // a downward pointer on the card's bottom edge, on the widget's side
+      const px = clamp(tx, cx - width / 2 + 16, cx + width / 2 - 16);
+      ctx.moveTo(px - 7, ty);
+      ctx.lineTo(px + 7, ty);
+      ctx.lineTo(px, ty + 8);
+    }
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -2644,6 +2738,19 @@ function lerpColor(a, b, t) {
   return out;
 }
 const rgbString = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+/**
+ * A hazard colour made fit for an edge warning: dark liveries (navy, black) are lifted towards white
+ * until they stand out on dark asphalt (relative luminance ≥ 0.12; team reds keep their colour). Light ones pass unchanged.
+ */
+export function warnColor(c) {
+  if (!c || !(c.startsWith('#') || c.startsWith('rgb'))) return c;
+  const lum = (rgb) => rgb.reduce((s, v, i) => s + [0.2126, 0.7152, 0.0722][i] * Math.pow(v / 255, 2.2), 0);
+  const base = hex(c);
+  if (lum(base) >= 0.12) return c;
+  let t = 0;
+  while (t < 1 && lum(base.map((v) => lerp(v, 255, t))) < 0.12) t += 0.05;
+  return lerpColor(c, '#ffffff', t);
+}
 function hex(h) {
   if (h.startsWith('rgb')) return h.match(/\d+/g).slice(0, 3).map(Number);
   const s = h.replace('#', '');

@@ -183,3 +183,35 @@ test('calling for the box hands the car back to the pit-entry glide', () => {
   w.pit.requested = true;
   assert.equal(w.neutralised, false);
 });
+
+test('late in a race the stranded car does not reach you before the safety car takes over', () => {
+  for (const elapsed of [30, 150, 300]) {
+    const w = racingWorld();
+    w.elapsed = elapsed;
+    w.speed = baseSpeed(elapsed);
+    w.player.parts && (w.player.parts.wing = 0);
+    deploy(w);
+    const st = w.hazards.find((h) => h.type === 'stranded');
+    let t = 0;
+    while (!w.sc.neutral && t < 10) { step(w, idle(), DT); t += DT; }
+    assert.ok(w.sc.neutral, 'taken over');
+    assert.equal(w.gameOver, false);
+    assert.ok(st.x - st.w / 2 > w.player.x + 60, `still ahead at takeover (t=${elapsed}: x ${Math.round(st.x)})`);
+  }
+});
+
+test('a car attacking from behind stands down when the safety car comes out: no place lost', () => {
+  const events = [];
+  const w = racingWorld(events);
+  w.speed = baseSpeed(60);
+  const pos = w.position;
+  const p = w.player;
+  w.hazards.push({
+    id: 4242, type: "rival", x: p.x - 300, y: p.y - 90, w: 80, h: 30, rel: w.speed + 200, pace: 1.2, vy: 0, scPace: 0,
+    team: { name: 'T', primary: '#fff' }, driver: null, teammate: false, fromBehind: true, weave: false, weavePhase: 0, passed: false, frame: 0, defend: false, brake: 0,
+  });
+  deploy(w);
+  step(w, idle(), 4);
+  assert.equal(w.position, pos);
+  assert.ok(!events.some(([e]) => e === 'passedBy'));
+});

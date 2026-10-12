@@ -2,7 +2,7 @@
 // points (B7), pit-window clarity (B8) and weather you can plan for (B9).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { World } from '../src/world.js';
+import { World, popupBox } from '../src/world.js';
 import { carById } from '../src/cars.js';
 import { applyRun, evaluateTrophies, EMPTY_CAREER, EMPTY_RUN } from '../src/career.js';
 import { COMPOUNDS, FLOW, GP, PIT, PLAYER, RIVAL_AI, SCORING, START, TYRES, WEATHER } from '../src/config.js';
@@ -44,6 +44,13 @@ const tyreAbove = (w, gap) => {
   return { id: Math.random(), type: 'tyre', x: p.x - 20, y: top - 10 - gap, r: 10, vx: 0, vy: 0, spin: 0, compound: COMPOUNDS.medium, bounce: false };
 };
 
+/** Runs a tyre through collide() at the given gaps, then clear of the band (so the close call is judged). */
+const goBy = (w, t, ...gaps) => {
+  const top = w.playerParts[1].y;
+  for (const g of [...gaps, 40]) { t.y = top - 10 - g; w.collide(t, w.playerRect, w.player); }
+  return t;
+};
+
 // ---------- B5: defenders ----------
 test('a defender commits to a lane, shows it, then holds it while the player moves', () => {
   const w = racingWorld();
@@ -83,7 +90,7 @@ test('three close calls inside 3 s pay 25 × (1.25, 1.5, 1.75), and the chain th
   const paid = [];
   for (let i = 0; i < 3; i++) {
     const before = w.run.scoreBy.close;
-    w.collide(tyreAbove(w, 10), w.playerRect, w.player);
+    goBy(w, tyreAbove(w, 10), 10);
     paid.push(w.run.scoreBy.close - before);
     step(w, idle(), 1);
   }
@@ -98,8 +105,8 @@ test('three close calls inside 3 s pay 25 × (1.25, 1.5, 1.75), and the chain th
 test('contact breaks the chain; a scrape pays double with slow motion', () => {
   const events = [];
   const w = racingWorld(events);
-  w.collide(tyreAbove(w, 10), w.playerRect, w.player);
-  w.collide(tyreAbove(w, 10), w.playerRect, w.player);
+  goBy(w, tyreAbove(w, 10), 10);
+  goBy(w, tyreAbove(w, 10), 10);
   assert.equal(w.flow.mult, 1.5);
   w.contact(rival(w.player.x + 140, w.player.y, 0), 'wing', { ahead: true, oy: 30, sideRub: false });
   assert.equal(w.flow.mult, 1);
@@ -107,13 +114,47 @@ test('contact breaks the chain; a scrape pays double with slow motion', () => {
   // scrape: the close call first, then the same tyre nearer than paint
   const t = tyreAbove(w, 10);
   const before = w.run.scoreBy.close;
-  w.collide(t, w.playerRect, w.player);
-  t.y += 7; // gap 3
-  w.collide(t, w.playerRect, w.player);
+  goBy(w, t, 10, 3);
   assert.equal(w.run.scoreBy.close - before, 2 * flowPay(SCORING.closeCall, 1.25));
   assert.ok(w.slowmo > 0 && w.scrapeFlash === 1);
   assert.ok(events.some(([e]) => e === 'scrape'));
   assert.equal(w.popups.at(-1).text, 'SCRAPE');
+});
+
+test('a close call or scrape that ends in a hit pays nothing: it was not a near miss', () => {
+  const events = [];
+  const w = racingWorld(events);
+  w.player.parts.wing = 0;
+  const t = tyreAbove(w, 10);
+  const top = w.playerParts[1].y;
+  for (const g of [12, 3, -2]) { t.y = top - 10 - g; w.collide(t, w.playerRect, w.player); }
+  assert.equal(w.gameOver, true);
+  assert.equal(w.closeCalls, 0);
+  assert.equal(w.run.scoreBy.close || 0, 0);
+  assert.equal(w.slowmo, 0);
+  assert.ok(!events.some(([e]) => e === 'closeCall' || e === 'scrape'));
+  // a rival that rubs after coming close: no close call when it pulls away either
+  const w2 = racingWorld();
+  const r = rival(w2.player.x + 10, w2.player.y + PLAYER.height * 0.45, 0);
+  w2.collide(r, w2.playerRect, w2.player); // touching
+  assert.ok(r.touched);
+  r.y += 60;
+  w2.collide(r, w2.playerRect, w2.player);
+  r.y += 200;
+  w2.collide(r, w2.playerRect, w2.player);
+  assert.equal(w2.closeCalls, 0);
+});
+
+test('close calls off the line pay the base points: no flow, no slow motion', () => {
+  const w = racingWorld();
+  w.start.launch = 5;
+  goBy(w, tyreAbove(w, 10), 10, 3);
+  assert.equal(w.flow.mult, 1);
+  assert.equal(w.slowmo, 0);
+  assert.equal(w.run.scoreBy.close, 2 * SCORING.closeCall);
+  const w2 = racingWorld();
+  goBy(w2, { ...tyreAbove(w2, 10), type: 'rival', w: 40, h: 20, grid: true, rel: 0, team: { name: 'T' } }, 10);
+  assert.equal(w2.flow.mult, 1);
 });
 
 test('DRS reports the real battery gain and builds flow; Flow ×3 unlocks its trophy', () => {
@@ -136,7 +177,22 @@ test('popups carry a label and a value, and stack instead of overprinting', () =
   w.addPopup(100, 300, 'CLOSE', '#fff', 31);
   w.addPopup(110, 302, 'PASS', '#fff', 60);
   assert.equal(w.popups[0].value, 31);
-  assert.equal(w.popups[1].y, 302 - 22);
+  assert.ok(w.popups[1].y < 300 - 20);
+  // three big restart passes at once, and a pass beside a wide scrape label: no two boxes overlap
+  for (const v of [210, 180, 150]) w.addPopup(400, 300, 'RESTART', '#fff', v);
+  w.addPopup(640, 300, 'PASS', '#fff', 75);
+  w.addPopup(760, 300, 'SCRAPE', '#fff', 38);
+  const phone = racingWorld();
+  phone.popupScale = 1.6;
+  phone.addPopup(100, 500, 'CLOSE', '#fff', 31);
+  phone.addPopup(100, 500, 'SCRAPE', '#fff', 31);
+  for (const ww of [w, phone]) {
+    const boxes = ww.popups.map((pp) => popupBox(pp.x, pp.y, pp.text, pp.value, ww.popupScale));
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      assert.ok(!(a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b), `${ww.popups[i].text} and ${ww.popups[j].text} overlap`);
+    }
+  }
 });
 
 // ---------- B7: track position ----------
@@ -146,6 +202,11 @@ test('place maths and the points table', () => {
   assert.equal(placesLost(0), 0);
   assert.equal(placesLost(GP.placeGapMetres * 2.4), 2);
   assert.equal(placesLost(GP.placeGapMetres * 2.6), 3);
+  // a typical stop costs about three places all race, not three at the start and nine by the end
+  for (const t of [0, 30, 60, 120, 180, 300, 600]) {
+    const n = placesLost(pitLossMetres(baseSpeed(t), PIT.typicalStop), t);
+    assert.ok(n >= 2 && n <= 4, `t=${t}: ${n} places`);
+  }
   const normal = pitLossMetres(baseSpeed(60), 2.5);
   const sc = pitLossMetres(baseSpeed(60) * 0.6, 2.5);
   assert.ok(normal > 150 && normal < 320, `a stop costs ${normal} m`);
@@ -218,6 +279,18 @@ test('a pit stop costs places; under the safety car it costs fewer', () => {
   assert.ok(normal.places >= 2, `normal stop: ${normal.places} places, ${Math.round(normal.lossMetres)} m`);
   assert.ok(cheap.lossMetres < normal.lossMetres * 0.75, `SC stop ${Math.round(cheap.lossMetres)} m vs ${Math.round(normal.lossMetres)} m`);
   assert.ok(cheap.places < normal.places);
+});
+
+test('a stop at the back of the field reports the places it actually cost', () => {
+  const events = [];
+  const w = racingWorld(events, 60);
+  w.position = GP.fieldSize - 1;
+  w.elapsed = PIT.firstWindowAt + PIT.interval;
+  w.update(DT, idle());
+  const out = doStop(w, events);
+  assert.equal(w.position, GP.fieldSize);
+  assert.equal(out.places, 1);
+  assert.equal(w.pit.placesLost, 1);
 });
 
 // ---------- B8: pit-window clarity ----------
@@ -322,6 +395,26 @@ test('rain is forecast before it falls, and the end of it is called too', () => 
   w.update(DT, idle());
   assert.ok(events.some(([e, p]) => e === 'forecast' && p.kind === 'dry'));
   assert.equal(w.expectedRain, 0);
+});
+
+test('a heavy shower puts wets on the plan as it starts, and keeps them there as the track soaks', () => {
+  const events = [];
+  const w = racingWorld(events);
+  assert.equal(w.nextCompound, 'medium');
+  w.forecast = { kind: 'rain', in: DT / 2, peak: 1 };
+  w.update(DT, idle());
+  assert.equal(w.raining, true);
+  assert.equal(events.find(([e]) => e === 'rainStart')[1].best, 'wet');
+  assert.equal(w.nextCompound, 'wet', 'the plan agrees with the call');
+  step(w, idle(), WEATHER.transition + 0.5);
+  assert.ok(w.rain > 0.9);
+  assert.equal(w.nextCompound, 'wet');
+  // an inter plan (overruled, or left over) moves on to wets once the track passes the wet line
+  const w2 = racingWorld();
+  w2.raining = true; w2.rainPeak = 1; w2.rainTimer = 60; w2.rain = 0.69;
+  w2.nextCompound = 'inter';
+  step(w2, idle(), 1);
+  assert.equal(w2.nextCompound, 'wet');
 });
 
 test('a soaked track dries through a hold at damp', () => {

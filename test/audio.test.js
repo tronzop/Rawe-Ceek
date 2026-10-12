@@ -126,6 +126,16 @@ test('audio: at most six one-shots; low priority drops, a crash pre-empts the re
   assert.ok(a.voices.some((v) => v.prio === 2), 'ordinary cues cannot steal the crash');
 });
 
+test('audio: long ambience beds have their own pool, so a burst of short cues never cuts them off', async () => {
+  const a = await engineWithStubs();
+  const bed = a.voice(9.5, { bus: a.ambBus });
+  for (let i = 0; i < 10; i++) a.voice(0.2);
+  assert.ok(a.voices.includes(bed), 'the crowd bed survives');
+  assert.equal(a.voices.filter((v) => !v.amb).length, 6);
+  for (let i = 0; i < 5; i++) a.voice(2, { bus: a.ambBus });
+  assert.equal(a.voices.filter((v) => v.amb).length, 3);
+});
+
 test('audio: a paused context stays paused; anything else not running is resumed', async () => {
   const a = await engineWithStubs();
   a.suspend();
@@ -183,4 +193,18 @@ test('audio: the limiter can switch silently (box idle, roll-out) and beeps only
   assert.equal(a.voices.length, 1, 'dash beep on entry');
   a.pitLimiter(true);
   assert.equal(a.voices.length, 1, 'no second beep while already on');
+});
+
+test('audio: a voice clip at game over does not bring the fading band back up', async () => {
+  const a = await engineWithStubs();
+  const targets = [];
+  a.duck = { gain: { setTargetAtTime: (v) => targets.push(v) } };
+  a.fadeOutMusic(0.7);
+  a.duckMusic(0.4, 0.08); // what playNow does for the "game over" clip
+  a.duckMusic(1, 0.35); // and nextInQueue once it ends
+  assert.deepEqual(targets, [0.0001]);
+  clearTimeout(a.fadeTimer);
+  a.startMusic();
+  assert.equal(targets.at(-1), 1, 'a new run brings it back');
+  a.stopMusic();
 });
